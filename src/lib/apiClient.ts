@@ -1,7 +1,7 @@
 import { DetectedMeeting, CalendarConnectionState, AIAnalysisResult } from "../types/meeting";
 import { UserProfile } from "../hooks/useAuth";
 
-const API_BASE = "http://localhost:4000/api";
+const API_BASE = (import.meta as any).env?.VITE_API_URL || "http://localhost:4000/api";
 
 export class MeetRecordApiClient {
   private isBackendAvailable: boolean | null = null;
@@ -9,10 +9,16 @@ export class MeetRecordApiClient {
   private async checkAvailability(): Promise<boolean> {
     if (this.isBackendAvailable !== null) return this.isBackendAvailable;
     try {
-      const res = await fetch(`${API_BASE}/health`, { method: "GET", signal: AbortSignal.timeout(1200) });
+      const healthUrl = API_BASE.endsWith("/api") ? `${API_BASE.slice(0, -4)}/health` : `${API_BASE}/health`;
+      const res = await fetch(healthUrl, { method: "GET", signal: AbortSignal.timeout(1500) });
       this.isBackendAvailable = res.ok;
     } catch {
-      this.isBackendAvailable = false;
+      try {
+        const res2 = await fetch(`${API_BASE}/health`, { method: "GET", signal: AbortSignal.timeout(1500) });
+        this.isBackendAvailable = res2.ok;
+      } catch {
+        this.isBackendAvailable = false;
+      }
     }
     return this.isBackendAvailable;
   }

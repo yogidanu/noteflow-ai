@@ -15,7 +15,13 @@ summaryRouter.post("/generate", requireAuth, summaryRateLimiter, async (req: Req
     const { transcript, rawInput, refinement = "standard" } = req.body;
 
     let transcriptPayload = transcript;
-    if (!transcriptPayload && rawInput) {
+    if (typeof transcript === "string") {
+      transcriptPayload = await sttService.processAudioStream({
+        meetingId: `manual-${Date.now()}`,
+        durationSeconds: 1800,
+        sampleTranscriptPreset: transcript,
+      });
+    } else if (!transcriptPayload && rawInput) {
       transcriptPayload = await sttService.processAudioStream({
         meetingId: `manual-${Date.now()}`,
         durationSeconds: 1800,
