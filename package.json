@@ -1,0 +1,53 @@
+{
+  "name": "noteflow-ai",
+  "productName": "NoteFlow AI",
+  "version": "1.0.0",
+  "description": "NoteFlow AI • Meet Record Desktop Companion for macOS and Windows",
+  "private": true,
+  "type": "module",
+  "main": "dist-desktop/desktop/main.js",
+  "scripts": {
+    "dev": "vite",
+    "server": "tsx server/index.ts",
+    "build": "tsc -b && vite build",
+    "lint": "oxlint",
+    "preview": "vite preview",
+    "desktop:build": "tsc -p tsconfig.desktop.json && node -e \"const cjs=JSON.stringify({type:'commonjs'},null,2); fs.writeFileSync('dist-desktop/package.json', cjs); fs.writeFileSync('dist-desktop/desktop/package.json', cjs);\"",
+    "desktop:app": "npm run build && npm run desktop:build && electron-builder --dir",
+    "desktop:dist": "npm run build && npm run desktop:build && electron-builder",
+    "desktop:dist:mac": "npm run build && npm run desktop:build && electron-builder --mac",
+    "desktop:dist:win": "npm run build && npm run desktop:build && electron-builder --win"
+  },
+  "dependencies": {
+    "canvas-confetti": "^1.9.4",
+    "clsx": "^2.1.1",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "electron-updater": "^6.3.9",
+    "express": "^5.2.1",
+    "framer-motion": "^13.1.0",
+    "lucide-react": "^1.31.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tailwind-merge": "^3.6.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/canvas-confetti": "^1.9.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.4",
+    "autoprefixer": "^10.5.4",
+    "electron": "^34.2.0",
+    "electron-builder": "^25.1.8",
+    "oxlint": "^1.75.0",
+    "postcss": "^8.5.26",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.12",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.0"
+  }
+}

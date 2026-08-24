@@ -1,0 +1,93 @@
+# ─────────────────────────────────────────────────────────────
+# NoteFlow AI • Meet Record Production Packaging Configuration
+# ─────────────────────────────────────────────────────────────
+
+appId: ai.noteflow.desktop
+productName: NoteFlow AI
+copyright: © 2026 NoteFlow AI Inc. All rights reserved.
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - "dist/**/*"
+  - "dist-desktop/**/*"
+  - "package.json"
+  - "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}"
+  - "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}"
+
+# ─────────────────────────────────────────────────────────────
+# macOS Installer Configuration (.dmg & .app bundle)
+# ─────────────────────────────────────────────────────────────
+mac:
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch:
+        - arm64
+    - target: zip
+      arch:
+        - arm64
+  icon: build/icon.png
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.inherit.plist
+  extendInfo:
+    NSMicrophoneUsageDescription: "NoteFlow AI requires microphone access for meeting recording and transcription."
+    CFBundleURLTypes:
+      - CFBundleURLName: "NoteFlow AI Protocol"
+        CFBundleURLSchemes:
+          - "noteflow"
+
+dmg:
+  title: "Install NoteFlow AI"
+  icon: build/icon.png
+  contents:
+    - x: 140
+      y: 220
+      type: file
+    - x: 520
+      y: 220
+      type: link
+      path: /Applications
+  window:
+    width: 660
+    height: 400
+
+# ─────────────────────────────────────────────────────────────
+# Windows Installer Configuration (NSIS .exe & .msi)
+# ─────────────────────────────────────────────────────────────
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: msi
+      arch:
+        - x64
+  icon: build/icon.png
+  publisherName: NoteFlow AI Inc.
+  protocols:
+    - name: "NoteFlow Protocol"
+      schemes:
+        - "noteflow"
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: NoteFlow AI
+  uninstallDisplayName: "NoteFlow AI (Remove only)"
+  runAfterFinish: true
+
+# ─────────────────────────────────────────────────────────────
+# Secure Distribution & Automatic Updates
+# ─────────────────────────────────────────────────────────────
+publish:
+  provider: github
+  owner: noteflow-ai
+  repo: meet-record-desktop
+  releaseType: release
