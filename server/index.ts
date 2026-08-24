@@ -108,9 +108,9 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 let serverInstance: any = null;
 
 if (process.env.NODE_ENV !== "test") {
-  serverInstance = app.listen(config.port, () => {
-    console.log(`[MeetRecordBackend] Server running at http://localhost:${config.port}`);
-    console.log(`[MeetRecordBackend] Health check available at http://localhost:${config.port}/health`);
+  serverInstance = app.listen(config.port, "0.0.0.0", () => {
+    console.log(`[MeetRecordBackend] Server running on 0.0.0.0:${config.port}`);
+    console.log(`[MeetRecordBackend] Health check available at http://0.0.0.0:${config.port}/health`);
   });
 }
 

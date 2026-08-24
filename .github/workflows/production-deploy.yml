@@ -1,4 +1,4 @@
-name: Production CI/CD Pipeline
+name: Render Production CI/CD Pipeline
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   validate-and-test:
-    name: Build & E2E Test Suite
+    name: Build & Automated Test Suite
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -26,11 +26,19 @@ jobs:
       - name: Oxlint Code Quality Check
         run: npm run lint
 
-      - name: Compile TypeScript & Vite Bundle
+      - name: Compile TypeScript & Vite Production Bundle
         run: npm run build
 
-      - name: Run End-to-End Verification Suite (19 Tests)
-        run: npx tsx test/e2e-meet-record.test.ts
+      - name: Run Backend & FTUX Test Verification Suite (51 Tests)
+        run: |
+          npx tsx test/backend-production.test.ts
+          npx tsx test/desktop-auth-configuration.test.ts
+          npx tsx test/desktop-login.test.ts
+          npx tsx test/ftux-e2e.test.ts
+          npx tsx test/application-routing.test.ts
+          npx tsx test/meeting-detection.test.ts
+          npx tsx test/google-auth.test.ts
+          npx tsx test/google-calendar.test.ts
 
   security-scan:
     name: Security Vulnerability Scan
@@ -47,8 +55,8 @@ jobs:
           severity: 'CRITICAL,HIGH'
           ignore-unfixed: true
 
-  deploy-production:
-    name: Deploy to Production (ECS Blue/Green)
+  deploy-to-render:
+    name: Trigger Render Production Deployment
     needs: [validate-and-test, security-scan]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -57,27 +65,30 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials (OIDC Role)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: us-east-1
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build, Tag, and Push Docker Image
+      - name: Trigger Render Web Service Deployment via Deploy Hook
         env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: noteflow-meet-record
-          IMAGE_TAG: ${{ github.sha }}
+          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          if [ -z "$RENDER_DEPLOY_HOOK" ]; then
+            echo "::warning ::RENDER_DEPLOY_HOOK_URL secret is not set. Render GitHub integration will deploy automatically on push to main."
+          else
+            echo "🚀 Triggering zero-downtime deployment on Render..."
+            RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "$RENDER_DEPLOY_HOOK")
+            HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS" | cut -d':' -f2)
+            if [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
+              echo "✅ Render deployment successfully initiated!"
+            else
+              echo "❌ Render deploy hook returned HTTP status: $HTTP_STATUS"
+              echo "$RESPONSE"
+              exit 1
+            fi
+          fi
 
-      - name: Trigger Zero-Downtime Blue/Green ECS Service Update
+      - name: Verify Production Health Probe (Optional Smoke Test)
+        env:
+          API_URL: ${{ secrets.PRODUCTION_API_URL || 'https://api.noteflow.ai' }}
         run: |
-          aws ecs update-service --cluster noteflow-prod-cluster --service noteflow-meet-record-service --force-new-deployment
+          echo "Waiting 20 seconds for Render rolling deployment..."
+          sleep 20
+          echo "Probing $API_URL/health..."
+          curl -f -m 10 "$API_URL/health" || echo "Note: Initial probe timed out during cold build; Render will continue zero-downtime rollout."

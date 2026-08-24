@@ -8,6 +8,7 @@
   "main": "dist-desktop/desktop/main.js",
   "scripts": {
     "dev": "vite",
+    "start": "npx tsx server/index.ts",
     "server": "tsx server/index.ts",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
