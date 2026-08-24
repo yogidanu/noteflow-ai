@@ -40,3 +40,4 @@ redis_data/
 *.njsproj
 *.sln
 *.sw?
+npm-cache/
