@@ -4,6 +4,13 @@ import { requireAuth } from "../middleware/authMiddleware.js";
 
 export const calendarRouter = Router();
 
+const authErrors = [
+  "UNAUTHORIZED_NO_VALID_SESSION",
+  "CALENDAR_NOT_AUTHORIZED",
+  "CALENDAR_PERMISSION_REVOKED",
+  "CALENDAR_TOKEN_EXPIRED",
+];
+
 /**
  * GET /api/calendar/events
  * Returns today's detected calendar meetings with Google Meet URLs for the authenticated user.
@@ -22,9 +29,11 @@ calendarRouter.get("/events", requireAuth, async (req: Request, res: Response) =
       lastSyncedAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     });
   } catch (error: any) {
-    res.status(error.message === "UNAUTHORIZED_NO_VALID_SESSION" ? 401 : 500).json({
+    const isAuthError = authErrors.includes(error.message);
+    res.status(isAuthError ? 401 : 500).json({
       success: false,
       error: error.message || "FAILED_TO_FETCH_CALENDAR_EVENTS",
+      requiresReconnect: isAuthError,
     });
   }
 });
@@ -45,9 +54,11 @@ calendarRouter.post("/sync", requireAuth, async (req: Request, res: Response) =>
       lastSyncedAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     });
   } catch (error: any) {
-    res.status(500).json({
+    const isAuthError = authErrors.includes(error.message);
+    res.status(isAuthError ? 401 : 500).json({
       success: false,
       error: error.message || "SYNC_FAILED",
+      requiresReconnect: isAuthError,
     });
   }
 });

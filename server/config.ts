@@ -56,6 +56,8 @@ export const config = {
     "noteflow://auth/callback",
     "https://app.noteflow.ai/auth/callback",
     "https://app.noteflow.ai/auth/desktop-login",
+    "https://noteflow-ai-cc3p.vercel.app/auth/callback",
+    "https://noteflow-ai-cc3p.vercel.app/auth/desktop-login",
     "http://localhost:5173/auth/desktop-login",
     "http://localhost:5173/auth/callback",
     "http://localhost:4000/api/auth/google/callback",

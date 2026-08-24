@@ -160,7 +160,7 @@ export class MeetRecordApiClient {
       const available = await this.checkAvailability();
       if (!available) return true;
 
-      const res = await fetch(`${API_BASE}/auth/google/callback`, {
+      const res = await fetch(`${API_BASE}/auth/google/exchange`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, name: name || email.split("@")[0] }),
