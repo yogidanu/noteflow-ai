@@ -13,6 +13,9 @@ export type RecordingLifecycleStatus =
 export interface PersistentRecordingSession {
   recordingSessionId: string;
   meetingId: string;
+  calendarEventId?: string;
+  transcriptId?: string;
+  summaryId?: string;
   userId: string;
   userIds: string[];
   meetingUrl?: string;
@@ -93,6 +96,7 @@ class RecordingSessionService extends EventEmitter {
   public createSession(params: {
     meetingId: string;
     userId: string;
+    calendarEventId?: string;
     title?: string;
     meetingUrl?: string;
     dedupHash?: string;
@@ -120,10 +124,13 @@ class RecordingSessionService extends EventEmitter {
       ? path.join(this.artifactsDirectory, `${recordingSessionId}.webm`)
       : undefined;
 
+    const calendarEventId = params.calendarEventId || (params.meetingId.startsWith("meet-event-") ? params.meetingId.replace("meet-event-", "") : params.meetingId);
+
     const now = Date.now();
     const session: PersistentRecordingSession = {
       recordingSessionId,
       meetingId: params.meetingId,
+      calendarEventId,
       userId: params.userId,
       userIds: [params.userId],
       meetingUrl: params.meetingUrl,
@@ -338,16 +345,46 @@ class RecordingSessionService extends EventEmitter {
       throw new Error("RECORDING_SESSION_NOT_FOUND");
     }
 
+    const transcriptId = `tr_${session.recordingSessionId}`;
+    const summaryId = `sum_${session.recordingSessionId}`;
+    session.transcriptId = transcriptId;
+    session.summaryId = summaryId;
+
     session.status = "COMPLETED";
     session.transcriptionStatus = "COMPLETED";
     session.synchronizationStatus = "SYNCHRONIZED";
-    if (payload?.transcript) session.transcript = payload.transcript;
-    if (payload?.summary) session.summary = payload.summary;
+
+    if (payload?.transcript) {
+      session.transcript = {
+        ...payload.transcript,
+        transcriptId,
+        recordingSessionId: session.recordingSessionId,
+        meetingId: session.meetingId,
+        calendarEventId: session.calendarEventId,
+        userId: session.userId,
+      };
+    }
+    if (payload?.summary) {
+      session.summary = {
+        ...payload.summary,
+        summaryId,
+        recordingSessionId: session.recordingSessionId,
+        meetingId: session.meetingId,
+        calendarEventId: session.calendarEventId,
+        userId: session.userId,
+      };
+    }
+
     session.updatedAt = Date.now();
     this.persistToDisk();
 
     console.log("[RECORDING DEBUG] SESSION_COMPLETED", {
       recordingSessionId: session.recordingSessionId,
+      meetingId: session.meetingId,
+      calendarEventId: session.calendarEventId,
+      transcriptId,
+      summaryId,
+      userId: session.userId,
       status: "COMPLETED",
       transcriptionStatus: "COMPLETED",
       synchronizationStatus: "SYNCHRONIZED",

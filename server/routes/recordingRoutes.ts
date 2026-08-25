@@ -51,6 +51,7 @@ recordingRouter.post("/schedule", requireAuth, recordingRateLimiter, (req: Reque
   const dedupHash = computeMeetingHash(meetingUrl);
   const session = recordingSessionService.createSession({
     meetingId: meetingId || `meet-${Date.now()}`,
+    calendarEventId: (req.body?.calendarEventId as string) || (req.body?.id as string),
     title: title || "Scheduled Google Meet",
     meetingUrl,
     dedupHash,
@@ -71,6 +72,7 @@ recordingRouter.post("/schedule", requireAuth, recordingRateLimiter, (req: Reque
     session: {
       recordingSessionId: session.recordingSessionId,
       meetingId: session.meetingId,
+      calendarEventId: session.calendarEventId,
       status: session.status,
       dedupHash: session.dedupHash,
       title: session.title,
@@ -90,6 +92,7 @@ const handleStartRecording = (req: Request, res: Response) => {
   if (!session) {
     session = recordingSessionService.createSession({
       meetingId: req.body.meetingId || `meet-${Date.now()}`,
+      calendarEventId: req.body.calendarEventId,
       userId,
       title: req.body.title || "Live Meeting Session",
       meetingUrl: req.body.meetingUrl,
@@ -242,6 +245,10 @@ const handleStopRecording = async (req: Request, res: Response) => {
       data: {
         recordingSessionId: completedSession.recordingSessionId,
         meetingId: completedSession.meetingId,
+        calendarEventId: completedSession.calendarEventId,
+        transcriptId: completedSession.transcriptId,
+        summaryId: completedSession.summaryId,
+        userId: completedSession.userId,
         title: completedSession.title,
         status: completedSession.status,
         durationSeconds: completedSession.durationSeconds,
