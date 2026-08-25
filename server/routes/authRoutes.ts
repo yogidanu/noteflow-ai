@@ -51,12 +51,16 @@ function isAllowedRedirectUri(uri: string): boolean {
  * Returns the official Google OAuth 2.0 authorization URL with CSRF state and optional PKCE.
  */
 authRouter.get("/google/url", (req: Request, res: Response) => {
-  const requestedRedirectUri = (req.query.redirectUri as string) || config.google.redirectUri;
+  console.log("[OAuth DEBUG] AUTH_URL_START", { timestamp: new Date().toISOString(), ip: req.ip });
+
+  // Post-auth destination for user (defaults to frontend web app)
+  const clientDestination = (req.query.redirectUri as string) || (req.query.clientRedirectUri as string) || config.frontendUrl;
   const codeChallenge = req.query.code_challenge as string | undefined;
   const codeChallengeMethod = (req.query.code_challenge_method as string) || "S256";
 
-  // Validate redirect URI
-  if (!isAllowedRedirectUri(requestedRedirectUri)) {
+  // Validate client destination
+  if (!isAllowedRedirectUri(clientDestination)) {
+    console.warn("[OAuth DEBUG] Invalid client destination requested:", clientDestination);
     return res.status(400).json({
       success: false,
       error: "INVALID_REDIRECT_URI",
@@ -72,17 +76,25 @@ authRouter.get("/google/url", (req: Request, res: Response) => {
     ? config.google.allScopes
     : config.google.authScopes;
 
-  // Generate cryptographically signed state persisted to memory & disk
+  // Generate cryptographically signed state storing client destination
   const state = oauthStateStore.generateState({
-    redirectUri: requestedRedirectUri,
+    redirectUri: clientDestination,
     codeChallenge,
     codeChallengeMethod,
-    flowType: requestedRedirectUri.startsWith("noteflow://") || Boolean(codeChallenge) ? "desktop" : "web",
+    flowType: clientDestination.startsWith("noteflow://") || Boolean(codeChallenge) ? "desktop" : "web",
+  });
+
+  const stateFingerprint = crypto.createHash("sha256").update(state).digest("hex").substring(0, 12);
+  console.log("[OAuth DEBUG] state generated", {
+    stateFingerprint,
+    storageType: "stateless_aes256_gcm",
+    expiresInMs: 600000,
+    clientDestination: clientDestination.substring(0, 35),
   });
 
   const rootUrl = "https://accounts.google.com/o/oauth2/v2/auth";
   const options: Record<string, string> = {
-    redirect_uri: requestedRedirectUri,
+    redirect_uri: config.google.redirectUri, // Google's registered OAuth callback on Render
     client_id: config.google.clientId,
     access_type: "offline",
     response_type: "code",
@@ -117,16 +129,36 @@ authRouter.get("/google/url", (req: Request, res: Response) => {
  * 4. Redirects to desktop companion (noteflow://auth/callback) or web app (FRONTEND_URL).
  */
 authRouter.get("/google/callback", async (req: Request, res: Response) => {
+  const callbackTimestamp = new Date().toISOString();
+  const code = req.query.code as string | undefined;
+  const state = req.query.state as string | undefined;
+  const error = req.query.error as string | undefined;
+
+  const stateFingerprint = state ? crypto.createHash("sha256").update(state).digest("hex").substring(0, 12) : "none";
+  console.log("[OAuth DEBUG] CALLBACK_RECEIVED", {
+    returnedStatePresent: Boolean(state),
+    stateFingerprint,
+    codePresent: Boolean(code),
+    errorPresent: Boolean(error),
+    timestamp: callbackTimestamp,
+  });
+
   try {
-    const code = req.query.code as string | undefined;
-    const state = req.query.state as string | undefined;
-    const error = req.query.error as string | undefined;
-
     // 1. Atomically retrieve and consume CSRF state nonce (single-use)
+    console.log("[OAuth DEBUG] STATE_LOOKUP", { stateFingerprint });
     const stateRecord = state ? oauthStateStore.consumeState(state) : null;
+    const stateFound = Boolean(stateRecord);
+    console.log("[OAuth DEBUG] state found=" + stateFound, {
+      stateFingerprint,
+      flowType: stateRecord?.flowType,
+    });
 
-    // Determine target redirect URI (fallback to configured frontendUrl)
-    const targetRedirectUri = stateRecord?.redirectUri || config.frontendUrl;
+    // Determine target redirect URI (ensure it does not point to the callback route itself)
+    let targetRedirectUri = stateRecord?.redirectUri || config.frontendUrl;
+    if (targetRedirectUri.includes("/api/auth/google/callback")) {
+      targetRedirectUri = config.frontendUrl;
+    }
+
     const isDesktopFlow =
       targetRedirectUri.startsWith("noteflow://") ||
       targetRedirectUri.includes("/auth/desktop-login") ||
@@ -135,20 +167,20 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
 
     // 2. Handle Google-side user denial or access error
     if (error) {
-      console.warn("[AuthRoutes] Google OAuth callback error received:", error);
+      console.warn("[OAuth DEBUG] Google OAuth user denial / error received:", error);
       if (isDesktopFlow) {
         return res.redirect(
           `noteflow://auth/callback?error=${encodeURIComponent(error)}&state=${encodeURIComponent(state || "")}`
         );
       }
       return res.redirect(
-        `${config.frontendUrl}/auth/desktop-login?error=${encodeURIComponent(error)}&state=${encodeURIComponent(state || "")}`
+        `${config.frontendUrl}?error=${encodeURIComponent(error)}`
       );
     }
 
     // 3. Reject missing or expired CSRF state
     if (!state || !stateRecord) {
-      console.warn("[AuthRoutes] Google OAuth callback state invalid or expired:", state);
+      console.warn("[OAuth DEBUG] Rejected invalid or expired state:", { stateFingerprint });
       return res.status(400).json({
         success: false,
         error: "INVALID_OR_EXPIRED_STATE",
@@ -188,32 +220,28 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
         });
 
         if (tokenRes.ok) {
-          const tokenData = await tokenRes.json();
-          accessToken = tokenData.access_token;
-          if (tokenData.refresh_token) {
-            refreshToken = tokenData.refresh_token;
-          }
-          if (tokenData.expires_in) {
-            expiresInSeconds = tokenData.expires_in;
-          }
+          const tokenData: any = await tokenRes.json();
+          accessToken = tokenData.access_token || accessToken;
+          refreshToken = tokenData.refresh_token || refreshToken;
+          expiresInSeconds = tokenData.expires_in || 3600;
 
-          // Fetch authenticated user profile
-          const profileRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+          // Fetch Google User Profile info
+          const userProfileRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
             headers: { Authorization: `Bearer ${accessToken}` },
           });
 
-          if (profileRes.ok) {
-            const profile = await profileRes.json();
-            userEmail = profile.email || userEmail;
-            userName = profile.name || userName;
-            userAvatar = profile.picture;
+          if (userProfileRes.ok) {
+            const profileData: any = await userProfileRes.json();
+            userEmail = profileData.email || userEmail;
+            userName = profileData.name || profileData.given_name || userName;
+            userAvatar = profileData.picture || undefined;
           }
         } else {
-          const errBody = await tokenRes.text();
-          console.warn("[AuthRoutes] Google token exchange non-200 response:", errBody);
+          const errText = await tokenRes.text();
+          console.warn("[OAuth DEBUG] Google token exchange warning:", errText);
         }
-      } catch (tokenErr) {
-        console.warn("[AuthRoutes] Live Google token exchange exception, using safe fallback:", tokenErr);
+      } catch (tokenErr: any) {
+        console.warn("[OAuth DEBUG] Google token exchange error:", tokenErr?.message);
       }
     }
 
@@ -242,14 +270,14 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
         createdAt: Date.now(),
       });
 
-      console.log(`[AuthRoutes] Redirecting desktop OAuth callback to noteflow://auth/callback`);
+      console.log(`[OAuth DEBUG] Redirecting desktop OAuth callback to noteflow://auth/callback`);
       return res.redirect(
         `noteflow://auth/callback?code=${encodeURIComponent(oneTimeCode)}&state=${encodeURIComponent(state)}&email=${encodeURIComponent(userEmail)}&name=${encodeURIComponent(userName)}`
       );
     }
 
     // Web flow redirect back to frontend
-    const finalWebTarget = targetRedirectUri.startsWith("http") ? targetRedirectUri : `${config.frontendUrl}/auth/callback`;
+    const finalWebTarget = targetRedirectUri.startsWith("http") ? targetRedirectUri : config.frontendUrl;
     const redirectUrl = new URL(finalWebTarget);
     redirectUrl.searchParams.set("userId", userId);
     redirectUrl.searchParams.set("email", userEmail);
@@ -257,10 +285,10 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
     redirectUrl.searchParams.set("state", state);
     if (userAvatar) redirectUrl.searchParams.set("avatarUrl", userAvatar);
 
-    console.log(`[AuthRoutes] Redirecting web OAuth callback to ${redirectUrl.origin}`);
+    console.log(`[OAuth DEBUG] Redirecting web OAuth callback to ${redirectUrl.origin}`);
     return res.redirect(redirectUrl.toString());
   } catch (err: any) {
-    console.error("[AuthRoutes] Fatal error in GET /google/callback:", err);
+    console.error("[OAuth DEBUG] Fatal error in GET /google/callback:", err);
     res.status(500).json({
       success: false,
       error: "OAUTH_CALLBACK_FAILED",
