@@ -9,20 +9,87 @@ export interface CalendarAttendee {
   rsvp: "accepted" | "tentative" | "declined";
 }
 
+export interface MeetingOrganizer {
+  name: string;
+  email: string;
+}
+
+export type MeetingLifecycleStatus =
+  | "SCHEDULED"
+  | "STARTING"
+  | "IN_PROGRESS"
+  | "RECORDING"
+  | "COMPLETED"
+  | "CANCELLED";
+
 export interface StandardizedMeetingEvent {
   id: string;
   calendarEventId: string;
   title: string;
   startTime: string;
   endTime: string;
+  startIso?: string;
+  endIso?: string;
+  organizer: MeetingOrganizer;
   organizerName: string;
   organizerEmail: string;
   isExternalHost: boolean;
   attendees: CalendarAttendee[];
   platform: "google_meet" | "zoom" | "teams" | "unsupported";
   meetingUrl: string;
+  status: MeetingLifecycleStatus;
   recordingStatus: "off" | "scheduled" | "recording" | "transcribing" | "completed" | "error";
   dedupHash: string;
+}
+
+function extractMeetingUri(evt: any): string {
+  // 1. Video Conference entry points (Google Meet, Zoom add-ons)
+  const videoUri = evt.conferenceData?.entryPoints?.find((ep: any) => ep.entryPointType === "video")?.uri;
+  if (videoUri) return videoUri;
+
+  // 2. Google Hangout Link
+  if (evt.hangoutLink) return evt.hangoutLink;
+
+  // 3. Location URI
+  if (evt.location && evt.location.startsWith("http")) return evt.location;
+
+  // 4. Description scanning for Google Meet, Zoom, Microsoft Teams links
+  if (evt.description) {
+    const meetMatch = evt.description.match(/https?:\/\/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}(?:\?[^\s"'>]+)?/i);
+    if (meetMatch) return meetMatch[0];
+
+    const zoomMatch = evt.description.match(/https?:\/\/(?:[a-z0-9-]+\.)?zoom\.us\/(?:j|my)\/[a-zA-Z0-9_\-\.\:\+]+(?:\?[^\s"'>]+)?/i);
+    if (zoomMatch) return zoomMatch[0];
+
+    const teamsMatch = evt.description.match(/https?:\/\/(?:teams\.microsoft\.com\/(?:l\/meetup-join|meet)|teams\.live\.com\/meet)\/[^\s"'>]+/i);
+    if (teamsMatch) return teamsMatch[0];
+  }
+
+  return "";
+}
+
+function calculateMeetingStatus(startIso?: string, endIso?: string, userRsvp?: string, eventStatus?: string): MeetingLifecycleStatus {
+  if (eventStatus === "cancelled" || userRsvp === "declined") {
+    return "CANCELLED";
+  }
+  if (!startIso || !endIso) {
+    return "SCHEDULED";
+  }
+
+  const now = Date.now();
+  const startTime = new Date(startIso).getTime();
+  const endTime = new Date(endIso).getTime();
+
+  if (now > endTime) {
+    return "COMPLETED";
+  }
+  if (now >= startTime && now <= endTime) {
+    return "IN_PROGRESS";
+  }
+  if (startTime - now <= 10 * 60 * 1000) {
+    return "STARTING";
+  }
+  return "SCHEDULED";
 }
 
 export class CalendarService {
@@ -141,12 +208,7 @@ export class CalendarService {
           const items = gcalData.items || [];
 
           for (const evt of items) {
-            const entryUri =
-              evt.conferenceData?.entryPoints?.find((ep: any) => ep.entryPointType === "video")?.uri ||
-              evt.hangoutLink ||
-              (evt.location && evt.location.startsWith("http") ? evt.location : "") ||
-              "";
-
+            const entryUri = extractMeetingUri(evt);
             if (!entryUri) continue;
 
             const resolved = platformRegistry.resolve(entryUri);
@@ -177,18 +239,27 @@ export class CalendarService {
               ? new Date(endStr).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
               : "";
 
+            const status = calculateMeetingStatus(startStr, endStr, userAttendee?.rsvp, evt.status);
+
+            const organizerName = evt.organizer?.displayName || evt.organizer?.email || "Unknown Organizer";
+            const organizerEmail = evt.organizer?.email || "";
+
             standardizedEvents.push({
               id: `meet-event-${evt.id}`,
               calendarEventId: evt.id,
               title: evt.summary || "Untitled Meeting",
               startTime: startTimeFormatted,
               endTime: endTimeFormatted,
-              organizerName: evt.organizer?.displayName || evt.organizer?.email || "Unknown Organizer",
-              organizerEmail: evt.organizer?.email || "",
+              startIso: startStr,
+              endIso: endStr,
+              organizer: { name: organizerName, email: organizerEmail },
+              organizerName,
+              organizerEmail,
               isExternalHost,
               attendees,
               platform: resolved.platform,
               meetingUrl: resolved.canonicalUrl || entryUri,
+              status,
               recordingStatus: "off",
               dedupHash: resolved.dedupHash,
             });
@@ -206,7 +277,7 @@ export class CalendarService {
         {
           id: "gcal_evt_101",
           summary: "Sprint Planning & Q3 Roadmap Alignment",
-          start: { dateTime: new Date(Date.now() + 15 * 60000).toISOString() },
+          start: { dateTime: new Date(Date.now() + 5 * 60000).toISOString() },
           end: { dateTime: new Date(Date.now() + 60 * 60000).toISOString() },
           organizer: { displayName: "Sarah Chen", email: "sarah.chen@company.internal" },
           conferenceData: { entryPoints: [{ entryPointType: "video", uri: "https://meet.google.com/qrp-zvmk-sxc" }] },
@@ -217,7 +288,7 @@ export class CalendarService {
           start: { dateTime: new Date(Date.now() + 180 * 60000).toISOString() },
           end: { dateTime: new Date(Date.now() + 225 * 60000).toISOString() },
           organizer: { displayName: "Yogendra Singh", email: session.email },
-          conferenceData: { entryPoints: [{ entryPointType: "video", uri: "https://meet.google.com/dfg-hjkl-qwe" }] },
+          conferenceData: { entryPoints: [{ entryPointType: "video", uri: "https://zoom.us/j/98765432101" }] },
         },
         {
           id: "gcal_evt_103",
@@ -225,25 +296,33 @@ export class CalendarService {
           start: { dateTime: new Date(Date.now() + 320 * 60000).toISOString() },
           end: { dateTime: new Date(Date.now() + 365 * 60000).toISOString() },
           organizer: { displayName: "Alex Miller", email: "alex.m@company.internal" },
-          conferenceData: { entryPoints: [{ entryPointType: "video", uri: "https://meet.google.com/bnm-tyui-opz" }] },
+          conferenceData: { entryPoints: [{ entryPointType: "video", uri: "https://teams.microsoft.com/l/meetup-join/19%3ameeting_xyz123" }] },
         },
       ];
 
       for (const evt of testEvents) {
         const entryUri = evt.conferenceData.entryPoints[0].uri;
         const resolved = platformRegistry.resolve(entryUri);
+        const startStr = evt.start.dateTime;
+        const endStr = evt.end.dateTime;
+        const status = calculateMeetingStatus(startStr, endStr, "accepted");
+
         standardizedEvents.push({
           id: `meet-event-${evt.id}`,
           calendarEventId: evt.id,
           title: evt.summary,
-          startTime: new Date(evt.start.dateTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-          endTime: new Date(evt.end.dateTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          startTime: new Date(startStr).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          endTime: new Date(endStr).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          startIso: startStr,
+          endIso: endStr,
+          organizer: { name: evt.organizer.displayName, email: evt.organizer.email },
           organizerName: evt.organizer.displayName,
           organizerEmail: evt.organizer.email,
           isExternalHost: false,
           attendees: [{ name: evt.organizer.displayName, email: evt.organizer.email, rsvp: "accepted" }],
           platform: resolved.platform,
           meetingUrl: resolved.canonicalUrl,
+          status,
           recordingStatus: "off",
           dedupHash: resolved.dedupHash,
         });

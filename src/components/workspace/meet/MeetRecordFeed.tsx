@@ -269,7 +269,7 @@ export const MeetRecordFeed: React.FC<MeetRecordFeedProps> = ({
         <div className="flex items-center justify-between px-1">
           <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
             <Video className="w-4 h-4 text-[var(--primary-action)]" />
-            <span>Today's Detected Google Meet Calls ({detectedMeetings.length})</span>
+            <span>Today's Detected Upcoming Meetings ({detectedMeetings.length})</span>
           </div>
           <span className="text-[11px] text-[var(--text-subtle)] font-medium">Per-Meeting Opt-In Required</span>
         </div>
@@ -305,6 +305,36 @@ export const MeetRecordFeed: React.FC<MeetRecordFeedProps> = ({
                   <div className="space-y-2 flex-1 min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       {getStatusBadge(meeting.recordingStatus)}
+
+                      {/* Platform Badge */}
+                      {meeting.platform === "google_meet" && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 font-medium">
+                          Google Meet
+                        </span>
+                      )}
+                      {meeting.platform === "zoom" && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 font-medium">
+                          Zoom
+                        </span>
+                      )}
+                      {meeting.platform === "teams" && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20 font-medium">
+                          Microsoft Teams
+                        </span>
+                      )}
+
+                      {/* Meeting Timing Status */}
+                      {meeting.status === "STARTING" && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 font-medium animate-pulse">
+                          Starting Soon
+                        </span>
+                      )}
+                      {meeting.status === "IN_PROGRESS" && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 font-medium">
+                          Happening Now
+                        </span>
+                      )}
+
                       <span className="text-xs text-[var(--text-muted)] flex items-center gap-1 font-mono">
                         <Clock className="w-3 h-3" />
                         <span>{meeting.startTime} - {meeting.endTime}</span>

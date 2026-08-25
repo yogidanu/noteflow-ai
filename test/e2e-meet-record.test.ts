@@ -464,18 +464,18 @@ async function runE2ETests() {
   // Test 14: Unsupported Meeting Platform Detection
   // -------------------------------------------------------------
   try {
-    const teamsUrl = "https://teams.microsoft.com/l/meetup-join/19%3ameeting_12345";
-    const resolvedTeams = platformRegistry.resolve(teamsUrl);
+    const unsupportedUrl = "https://webex.com/meet/test_room_12345";
+    const resolvedUnsupported = platformRegistry.resolve(unsupportedUrl);
 
-    if (resolvedTeams.platform === "unsupported" && !resolvedTeams.capabilities.supportsHeadlessBot) {
+    if (resolvedUnsupported.platform === "unsupported" && !resolvedUnsupported.capabilities.supportsHeadlessBot) {
       results.push({
         id: 14,
         testCase: "Unsupported Meeting Platform Detection",
-        expectedResult: "Non-Google Meet links flagged as 'unsupported' with manual upload CTA.",
-        actualResult: `Resolved platform: '${resolvedTeams.platform}', headless bot: ${resolvedTeams.capabilities.supportsHeadlessBot}`,
+        expectedResult: "Non-supported links flagged as 'unsupported' with manual upload CTA.",
+        actualResult: `Resolved platform: '${resolvedUnsupported.platform}', headless bot: ${resolvedUnsupported.capabilities.supportsHeadlessBot}`,
         status: "PASS",
         severity: "MEDIUM",
-        evidence: `Handled Teams URL: ${resolvedTeams.canonicalUrl}`,
+        evidence: `Handled unsupported URL: ${resolvedUnsupported.canonicalUrl}`,
       });
     } else {
       throw new Error("Failed to detect unsupported platform");

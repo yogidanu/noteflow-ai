@@ -77,6 +77,16 @@ export type MeetRecordErrorType =
   | "UNSUPPORTED_PLATFORM"
   | "NETWORK_GLITCH";
 
+export type MeetingPlatformType = "google_meet" | "zoom" | "teams" | "unsupported";
+
+export type MeetingLifecycleStatus =
+  | "SCHEDULED"
+  | "STARTING"
+  | "IN_PROGRESS"
+  | "RECORDING"
+  | "COMPLETED"
+  | "CANCELLED";
+
 export interface Attendee {
   name: string;
   email: string;
@@ -84,18 +94,27 @@ export interface Attendee {
   rsvp: "accepted" | "tentative" | "declined";
 }
 
+export interface MeetingOrganizer {
+  name: string;
+  email: string;
+}
+
 export interface DetectedMeeting {
   id: string;
   calendarEventId: string;
   title: string;
-  startTime: string; // ISO 8601 or HH:MM
-  endTime: string;
+  startTime: string; // Formatted HH:MM e.g. "10:00 AM"
+  endTime: string;   // Formatted HH:MM e.g. "10:45 AM"
+  startIso?: string; // ISO 8601 string
+  endIso?: string;   // ISO 8601 string
+  organizer?: MeetingOrganizer;
   organizerName: string;
   organizerEmail: string;
   isExternalHost: boolean;
   attendees: Attendee[];
-  platform: "google_meet" | "unsupported";
+  platform: MeetingPlatformType;
   meetingUrl: string;
+  status?: MeetingLifecycleStatus;
   recordingStatus: RecordingStatusType;
   dedupHash: string;
   errorReason?: MeetRecordErrorType;
@@ -115,7 +134,7 @@ export interface MeetingNote {
   errorMessage?: string;
   analysis?: AIAnalysisResult;
   detectedMeetingId?: string;
-  platform?: "google_meet" | "unsupported";
+  platform?: MeetingPlatformType;
   meetingUrl?: string;
   durationSeconds?: number;
 }

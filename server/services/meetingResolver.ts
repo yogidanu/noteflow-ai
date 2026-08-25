@@ -81,12 +81,44 @@ export class ZoomResolver implements IMeetingResolver {
 }
 
 /**
+ * Microsoft Teams Resolver (MVP Supported Platform)
+ */
+export class TeamsResolver implements IMeetingResolver {
+  public platformId: SupportedPlatform = "teams";
+  private regex = /^https?:\/\/(?:teams\.microsoft\.com\/(?:l\/meetup-join|meet)|teams\.live\.com\/meet)\/([a-zA-Z0-9%_\-\.\:\+]+)/i;
+
+  public matchUrl(url: string): boolean {
+    return this.regex.test(url.trim());
+  }
+
+  public extractMeetingId(url: string): string | null {
+    const match = url.trim().match(this.regex);
+    return match ? decodeURIComponent(match[1]) : null;
+  }
+
+  public canonicalizeUrl(url: string): string {
+    const cleanUrl = url.trim().split("?")[0];
+    return cleanUrl;
+  }
+
+  public getCapabilities(): PlatformCapabilities {
+    return {
+      supportsHeadlessBot: true,
+      supportsNativeCloudRecording: false,
+      supportsLiveStreaming: false,
+      requiresHostAdmission: true,
+    };
+  }
+}
+
+/**
  * Resolver Registry
  */
 export class MeetingPlatformRegistry {
   private resolvers: IMeetingResolver[] = [
     new GoogleMeetResolver(),
     new ZoomResolver(),
+    new TeamsResolver(),
   ];
 
   public resolve(url: string): {
