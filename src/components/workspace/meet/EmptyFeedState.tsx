@@ -53,10 +53,12 @@ export const EmptyFeedState: React.FC<EmptyFeedStateProps> = ({
 
         <div className="space-y-1">
           <h3 className="text-xl sm:text-2xl font-bold text-[var(--text-primary)] tracking-tight">
-            No meetings yet
+            {calendarState.isConnected ? "Schedule is clear today" : "Connect your calendar to get started"}
           </h3>
           <p className="text-xs sm:text-sm text-[var(--text-secondary)] max-w-md mx-auto leading-relaxed">
-            Your upcoming meetings will appear here once they're detected from your connected calendar.
+            {calendarState.isConnected
+              ? `Connected to ${calendarState.accountEmail || "Google Calendar"}. NoteFlow will automatically prepare notes as soon as a Google Meet, Zoom, or Teams call appears.`
+              : "Link your Google Calendar to automatically detect upcoming video calls and generate structured notes."}
           </p>
         </div>
       </div>
