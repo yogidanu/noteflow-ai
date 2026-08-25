@@ -16,6 +16,59 @@ export interface SanitizedTranscriptPayload {
   segments: DiarizedSegment[];
 }
 
+export interface AudioValidationResult {
+  isValid: boolean;
+  format: string;
+  byteLength: number;
+  hasContent: boolean;
+  error?: string;
+}
+
+/**
+ * Validates audio buffer existence, minimum size, magic byte format, and waveform content.
+ */
+export function validateAudioBuffer(buffer?: Buffer): AudioValidationResult {
+  if (!buffer || buffer.length === 0) {
+    return { isValid: false, format: "unknown", byteLength: 0, hasContent: false, error: "AUDIO_BUFFER_EMPTY" };
+  }
+
+  const byteLength = buffer.length;
+  if (byteLength < 32) {
+    return { isValid: false, format: "unknown", byteLength, hasContent: false, error: "AUDIO_BUFFER_TOO_SMALL" };
+  }
+
+  // Magic bytes detection
+  let format = "unknown";
+  if (buffer[0] === 0x1a && buffer[1] === 0x45 && buffer[2] === 0xdf && buffer[3] === 0xa3) {
+    format = "webm";
+  } else if (buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WAVE") {
+    format = "wav";
+  } else if (buffer.toString("ascii", 0, 4) === "OggS") {
+    format = "ogg";
+  } else if (buffer.toString("ascii", 0, 3) === "ID3" || (buffer[0] === 0xff && (buffer[1] & 0xe0) === 0xe0)) {
+    format = "mp3";
+  } else if (buffer.toString("ascii", 4, 8) === "ftyp") {
+    format = "mp4";
+  } else {
+    format = "raw_pcm";
+  }
+
+  // Check for non-zero audio amplitude (not completely silent 0-byte stream)
+  let nonZeroCount = 0;
+  const sampleCount = Math.min(buffer.length, 1000);
+  for (let i = 0; i < sampleCount; i++) {
+    if (buffer[i] !== 0) nonZeroCount++;
+  }
+  const hasContent = nonZeroCount > 0;
+
+  return {
+    isValid: true,
+    format,
+    byteLength,
+    hasContent,
+  };
+}
+
 export class SpeechToTextService {
   /**
    * Processes raw audio streams or buffers with speaker diarization and normalizes speaker names.
@@ -28,8 +81,20 @@ export class SpeechToTextService {
     mimeType?: string;
     knownAttendees?: Array<{ name: string; email: string }>;
     sampleTranscriptPreset?: string;
+    realTranscriptStream?: string;
   }): Promise<SanitizedTranscriptPayload> {
     const deepgramKey = config.stt?.apiKey || process.env.DEEPGRAM_API_KEY;
+
+    // Validate audio buffer if provided
+    if (params.audioBuffer) {
+      const validation = validateAudioBuffer(params.audioBuffer);
+      console.log("[SpeechToTextService] AUDIO_VALIDATION", {
+        meetingId: params.meetingId,
+        format: validation.format,
+        byteLength: validation.byteLength,
+        hasContent: validation.hasContent,
+      });
+    }
 
     // 1. Live Deepgram Nova-2 STT Pipeline if API key and audio buffer are provided
     if (deepgramKey && !deepgramKey.includes("sample") && params.audioBuffer && params.audioBuffer.length > 0) {
@@ -95,8 +160,8 @@ export class SpeechToTextService {
     // 2. Immediate audio buffer purge from memory to guarantee data minimization
     params.audioBuffer = undefined;
 
-    // 3. Dialogue / VTT Parser for explicit sample presets or test fixtures ONLY
-    const rawTranscript = params.sampleTranscriptPreset || "";
+    // 3. Process real spoken transcript stream if provided
+    const rawTranscript = params.realTranscriptStream || params.sampleTranscriptPreset || "";
 
     if (!rawTranscript || rawTranscript.trim().length === 0) {
       return {
@@ -127,9 +192,9 @@ export class SpeechToTextService {
         continue;
       }
 
-      // Check for speaker tag (<v Sarah Chen>...</v> or Sarah: ...)
+      // Check for speaker tag (<v Sarah Chen>...</v> or Speaker 1: ...)
       const vttSpeakerMatch = line.match(/^<v\s+([^>]+)>(.*?)<\/v>$/i);
-      const colonSpeakerMatch = line.match(/^([A-Za-z\s]+):\s*(.*)$/);
+      const colonSpeakerMatch = line.match(/^([A-Za-z0-9\s]+):\s*(.*)$/);
 
       if (vttSpeakerMatch) {
         const speaker = vttSpeakerMatch[1].trim();

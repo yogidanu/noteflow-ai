@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
 import { sttService, SanitizedTranscriptPayload } from "./sttService.js";
 import { summaryService, AIAnalysisResult } from "./summaryService.js";
+import { recordingSessionService } from "./recordingSessionService.js";
 
 export type IngressStatus =
   | "off"
@@ -145,10 +147,26 @@ class IngressOrchestrator extends EventEmitter {
     session.status = "transcribing";
     this.emitEvent(session, "TRANSCRIPTION_STARTED");
 
-    // 1. Process STT
+    // Retrieve real persistent audio artifact from disk
+    let audioBuffer: Buffer | undefined;
+    const persistentSession = recordingSessionService.resolveSession(dedupHash);
+    if (persistentSession?.audioArtifactPath && fs.existsSync(persistentSession.audioArtifactPath)) {
+      try {
+        const fileBytes = fs.readFileSync(persistentSession.audioArtifactPath);
+        if (fileBytes.length > 0) {
+          audioBuffer = fileBytes;
+        }
+      } catch (e) {
+        console.warn("[IngressOrchestrator] Audio file reading fallback:", e);
+      }
+    }
+
+    // 1. Process STT with real audio buffer
     const transcript = await sttService.processAudioStream({
       meetingId: session.meetingId,
       durationSeconds: session.durationSeconds,
+      audioBuffer,
+      mimeType: "audio/webm",
     });
 
     // 2. Synthesize Grounded AI Summary

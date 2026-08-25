@@ -516,15 +516,23 @@ export class MeetRecordApiClient {
       const available = await this.checkAvailability();
       if (!available) return null;
 
-      const formData = new FormData();
-      formData.append("audio", params.audioBlob, "meeting_audio.webm");
-      if (params.meetingId) formData.append("meetingId", params.meetingId);
-      if (params.knownAttendees) formData.append("knownAttendees", JSON.stringify(params.knownAttendees));
+      const buffer = await params.audioBlob.arrayBuffer();
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      const audioBase64 = btoa(binary);
 
       const res = await fetch(getApiEndpoint("/recording/transcribe"), {
         method: "POST",
-        headers: this.getAuthHeaders(),
-        body: formData,
+        headers: this.getAuthHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({
+          audioBase64,
+          mimeType: params.audioBlob.type || "audio/webm",
+          meetingId: params.meetingId,
+          knownAttendees: params.knownAttendees,
+        }),
       });
 
       if (!res.ok) return null;
