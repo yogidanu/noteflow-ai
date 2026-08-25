@@ -88,6 +88,14 @@ export class SummaryService {
 
     // 1. Dynamic Decision Extraction
     const decisionKeywords = [
+      "launch date is",
+      "launch date",
+      "scheduled for",
+      "target date",
+      "our launch",
+      "date is",
+      "the next meeting is",
+      "next meeting is",
       "decided to",
       "we decided",
       "decision reached",
@@ -159,6 +167,15 @@ export class SummaryService {
 
     // 2. Dynamic Action Item Extraction
     const actionKeywords = [
+      "will prepare",
+      "prepare the",
+      "prepare",
+      "will review",
+      "will create",
+      "will build",
+      "will lead",
+      "will coordinate",
+      "will follow up",
       "will do",
       "i will",
       "i'll",
@@ -172,7 +189,6 @@ export class SummaryService {
       "provision",
       "notify",
       "schedule",
-      "review",
       "send",
     ];
 
@@ -183,10 +199,26 @@ export class SummaryService {
       if (hasAction && actionItems.length < 8) {
         // Extract possible assignee from segment speaker or direct mention
         let assignee = seg.speaker;
+        let taskText = seg.text;
+
+        const nameWillMatch = seg.text.match(/^([A-Z][a-z]+)\s+will\s+(.*)/i);
         const directMention = seg.text.match(/^([A-Z][a-z]+(?: [A-Z][a-z]+)?),\s*(?:can you|please|will you)/);
-        if (directMention) {
+
+        if (nameWillMatch) {
+          assignee = nameWillMatch[1];
+          taskText = nameWillMatch[2];
+        } else if (directMention) {
           assignee = directMention[1];
+          taskText = seg.text.replace(/^([A-Za-z\s]+),\s*(can you|please|will you)\s*/i, "");
+        } else {
+          taskText = seg.text
+            .replace(/^([A-Za-z\s]+),\s*(can you|please|will you)\s*/i, "")
+            .replace(/^(will do\.?|i will|i'll)\s*/i, "")
+            .trim();
         }
+
+        taskText = taskText.trim();
+        taskText = taskText.charAt(0).toUpperCase() + taskText.slice(1);
 
         // Extract due date if present
         let dueDate: string | undefined;
@@ -194,12 +226,6 @@ export class SummaryService {
         if (dueMatch) {
           dueDate = dueMatch[0].trim();
         }
-
-        let taskText = seg.text
-          .replace(/^([A-Za-z\s]+),\s*(can you|please|will you)\s*/i, "")
-          .replace(/^(will do\.?|i will|i'll)\s*/i, "")
-          .trim();
-        taskText = taskText.charAt(0).toUpperCase() + taskText.slice(1);
 
         actionItems.push({
           id: `act-dyn-${idx + 1}`,

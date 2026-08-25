@@ -534,7 +534,7 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
         updateMeetingStatus(id, "transcribing");
         setRecordingLifecycleState("PROCESSING");
 
-        let resolvedTranscript = isDemoMode ? (target.sampleTranscriptPreset || SAMPLE_ZOOM_TRANSCRIPT) : (target.sampleTranscriptPreset || "");
+        let resolvedTranscript = isDemoMode ? (target.sampleTranscriptPreset || SAMPLE_ZOOM_TRANSCRIPT) : "";
 
         // Stop session and trigger synthesis on backend
         if (target.dedupHash && !isDemoMode) {

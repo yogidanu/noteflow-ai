@@ -133,6 +133,7 @@ export interface DetectedMeeting {
 
 export interface MeetingNote {
   id: string;
+  userId?: string;
   title: string;
   createdAt: string; // ISO 8601
   updatedAt: string; // ISO 8601
@@ -144,6 +145,8 @@ export interface MeetingNote {
   errorMessage?: string;
   analysis?: AIAnalysisResult;
   detectedMeetingId?: string;
+  calendarEventId?: string;
+  recordingSessionId?: string;
   platform?: MeetingPlatformType;
   meetingUrl?: string;
   durationSeconds?: number;
