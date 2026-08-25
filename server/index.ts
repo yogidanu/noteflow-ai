@@ -50,8 +50,12 @@ app.use(
 app.use(express.json({ limit: "10mb" }));
 
 // -------------------------------------------------------------
-// Health Check Endpoints (Root & API Namespaces)
+// Root & Health Check Endpoints
 // -------------------------------------------------------------
+app.get("/", (_req: Request, res: Response) => {
+  res.redirect(302, config.frontendUrl);
+});
+
 app.get("/health", (_req: Request, res: Response) => {
   res.status(200).json({
     status: "ok",
