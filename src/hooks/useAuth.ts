@@ -51,13 +51,15 @@ export function useAuth() {
   // Concurrency guard to prevent duplicate concurrent OAuth attempts
   const authLockRef = useRef<boolean>(false);
 
-  // Sync session to localStorage
+  // Sync session to localStorage & apiClient session context
   useEffect(() => {
     try {
       if (user) {
         localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
+        apiClient.setSessionContext(user.id, user.email, user.name);
       } else {
         localStorage.removeItem(AUTH_STORAGE_KEY);
+        apiClient.setSessionContext(null, null, null);
       }
     } catch (e) {
       console.error("[useAuth] Failed to persist auth session", e);
@@ -242,8 +244,8 @@ export function useAuth() {
       }
 
       // 3. Fallback / Direct Exchange handler (when popup blocked or in mock/offline mode)
-      const targetEmail = fallbackEmail || "sarah.chen@acme-corp.com";
-      const targetName = fallbackName || "Sarah Chen";
+      const targetEmail = fallbackEmail || "user@workspace.internal";
+      const targetName = fallbackName || (targetEmail.includes("@") ? targetEmail.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) : "Workspace Member");
 
       const exchangeResult = await apiClient.exchangeGoogleAuth({
         email: targetEmail,

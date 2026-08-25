@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import { ingressOrchestrator } from "../services/ingressOrchestrator.js";
+import { sttService } from "../services/sttService.js";
 import { computeMeetingHash } from "../security/crypto.js";
 import { requireAuth } from "../middleware/authMiddleware.js";
 import { recordingRateLimiter } from "../middleware/rateLimiter.js";
@@ -143,6 +144,51 @@ recordingRouter.post("/stop", requireAuth, async (req: Request, res: Response) =
     res.status(500).json({
       success: false,
       error: error.message || "STOP_RECORDING_FAILED",
+    });
+  }
+});
+
+/**
+ * POST /api/recording/transcribe
+ * Accepts recorded audio buffer or base64 stream and returns diarized transcript payload.
+ */
+recordingRouter.post("/transcribe", requireAuth, async (req: Request, res: Response) => {
+  try {
+    const meetingId = (req.body?.meetingId as string) || (req.query?.meetingId as string) || `meet-${Date.now()}`;
+    const durationSeconds = Number(req.body?.durationSeconds) || 60;
+    let audioBuffer: Buffer | undefined;
+
+    if (Buffer.isBuffer(req.body)) {
+      audioBuffer = req.body;
+    } else if (req.body?.audioBase64) {
+      audioBuffer = Buffer.from(req.body.audioBase64, "base64");
+    }
+
+    let knownAttendees: Array<{ name: string; email: string }> | undefined;
+    if (req.body?.knownAttendees) {
+      try {
+        knownAttendees = typeof req.body.knownAttendees === "string" ? JSON.parse(req.body.knownAttendees) : req.body.knownAttendees;
+      } catch {
+        // ignore parse error
+      }
+    }
+
+    const transcript = await sttService.processAudioStream({
+      meetingId,
+      durationSeconds,
+      audioBuffer,
+      knownAttendees,
+      sampleTranscriptPreset: req.body?.sampleTranscriptPreset,
+    });
+
+    res.json({
+      success: true,
+      data: transcript,
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      error: err.message || "TRANSCRIPTION_FAILED",
     });
   }
 });

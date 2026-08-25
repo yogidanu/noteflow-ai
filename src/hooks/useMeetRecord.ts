@@ -7,6 +7,7 @@ import {
 } from "../types/meeting";
 import { SAMPLE_1ON1_REORG_TRANSCRIPT, SAMPLE_ZOOM_TRANSCRIPT } from "../lib/sampleData";
 import { apiClient } from "../lib/apiClient";
+import { webAudioRecorder } from "../lib/audioRecorder";
 import { desktopBridge } from "../lib/desktopBridge";
 import { MeetingDetectionStateType } from "../components/modals/MeetingDetectionSetupModal";
 
@@ -124,25 +125,24 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
 
   const [detectionState, setDetectionState] = useState<MeetingDetectionStateType>(() => {
     try {
-      const saved = localStorage.getItem(DETECTION_STATE_KEY) as MeetingDetectionStateType;
-      if (saved) return saved;
-    } catch (e) {
-      console.error("Failed to load detection state", e);
+      const saved = localStorage.getItem(DETECTION_STATE_KEY);
+      if (saved) return saved as MeetingDetectionStateType;
+    } catch {
+      // ignore
     }
-    return isDemoMode ? "enabled" : "not_enabled";
+    return "not_enabled";
   });
 
-  // Active Live Recording Session
-  const [activeRecordingMeetingId, setActiveRecordingMeetingId] = useState<string | null>(null);
-  const [recordingSeconds, setRecordingSeconds] = useState(0);
-  const [isPaused, setIsPaused] = useState(false);
-  const [audioPowerLevel, setAudioPowerLevel] = useState(0);
-  const [isSyncingCalendar, setIsSyncingCalendar] = useState(false);
+  const [isSyncingCalendar, setIsSyncingCalendar] = useState<boolean>(false);
   const [calendarError, setCalendarError] = useState<string | null>(null);
 
-  const timerRef = useRef<number | null>(null);
+  // Active Live Recording Session States
+  const [activeRecordingMeetingId, setActiveRecordingMeetingId] = useState<string | null>(null);
+  const [recordingSeconds, setRecordingSeconds] = useState<number>(0);
+  const [isPaused, setIsPaused] = useState<boolean>(false);
+  const [audioPowerLevel, setAudioPowerLevel] = useState<number>(0);
 
-  // Sync state to localStorage
+  // Sync state changes to storage
   useEffect(() => {
     try {
       localStorage.setItem(CALENDAR_STORAGE_KEY, JSON.stringify(calendarState));
@@ -161,33 +161,19 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
 
   useEffect(() => {
     try {
-      localStorage.setItem(DETECTION_ENABLED_KEY, isDetectionEnabled ? "true" : "false");
+      localStorage.setItem(DETECTION_ENABLED_KEY, String(isDetectionEnabled));
+    } catch (e) {
+      console.error("Failed to save detection enabled", e);
+    }
+  }, [isDetectionEnabled]);
+
+  useEffect(() => {
+    try {
       localStorage.setItem(DETECTION_STATE_KEY, detectionState);
     } catch (e) {
-      console.error("Failed to save detection preferences", e);
+      console.error("Failed to save detection state", e);
     }
-  }, [isDetectionEnabled, detectionState]);
-
-  // Live Recording Timer & Audio VAD Simulator
-  useEffect(() => {
-    if (activeRecordingMeetingId && !isPaused) {
-      timerRef.current = window.setInterval(() => {
-        setRecordingSeconds((prev) => prev + 1);
-        setAudioPowerLevel(Math.floor(35 + Math.random() * 55));
-      }, 1000);
-    } else {
-      if (timerRef.current !== null) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-    }
-
-    return () => {
-      if (timerRef.current !== null) {
-        clearInterval(timerRef.current);
-      }
-    };
-  }, [activeRecordingMeetingId, isPaused]);
+  }, [detectionState]);
 
   // 1. Connect Google Calendar
   const connectCalendar = useCallback(async (accountEmail: string) => {
@@ -206,22 +192,42 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
         return;
       }
 
-      // 1. Authorize calendar scope on backend
-      const success = await apiClient.connectGoogleOAuth(accountEmail);
-      if (!success) {
-        throw new Error("CALENDAR_AUTHORIZATION_FAILED");
+      // 1. Request incremental Google Calendar OAuth consent URL
+      const authData = await apiClient.getGoogleAuthUrl(undefined, "calendar");
+
+      if (authData?.authUrl && typeof window !== "undefined") {
+        const width = 500;
+        const height = 600;
+        const left = window.screenX + (window.outerWidth - width) / 2;
+        const top = window.screenY + (window.outerHeight - height) / 2.5;
+
+        const popup = window.open(
+          authData.authUrl,
+          "NoteFlow Calendar Authorization",
+          `width=${width},height=${height},left=${left},top=${top},status=no,resizable=yes`
+        );
+
+        if (popup) {
+          await new Promise<void>((resolve) => {
+            const checkTimer = window.setInterval(() => {
+              if (popup.closed) {
+                window.clearInterval(checkTimer);
+                resolve();
+              }
+            }, 600);
+          });
+        }
       }
 
-      const syncTime = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      setCalendarState({
-        isConnected: true,
-        accountEmail,
-        lastSyncedAt: syncTime,
-      });
-
-      // 2. Fetch real calendar meetings
+      // 2. Fetch real calendar meetings after authorization
       const gcalEvents = await apiClient.fetchCalendarEvents();
       if (gcalEvents && Array.isArray(gcalEvents.events)) {
+        const syncTime = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        setCalendarState({
+          isConnected: true,
+          accountEmail: gcalEvents.accountEmail || accountEmail,
+          lastSyncedAt: gcalEvents.lastSyncedAt || syncTime,
+        });
         setDetectedMeetings(gcalEvents.events);
       } else {
         setDetectedMeetings([]);
@@ -363,39 +369,82 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
   );
 
   // 7. Start Live Recording Ingress
-  const startLiveRecording = useCallback((id: string) => {
-    setActiveRecordingMeetingId(id);
-    setRecordingSeconds(0);
-    setIsPaused(false);
-    updateMeetingStatus(id, "recording");
-  }, [updateMeetingStatus]);
+  const startLiveRecording = useCallback(
+    async (id: string) => {
+      setActiveRecordingMeetingId(id);
+      setRecordingSeconds(0);
+      setIsPaused(false);
+      updateMeetingStatus(id, "recording");
+
+      // Start Web Audio Capture with live RMS equalizer
+      await webAudioRecorder.start({
+        onPowerLevel: (level) => setAudioPowerLevel(level),
+        onDuration: (sec) => setRecordingSeconds(sec),
+      });
+
+      const target = detectedMeetings.find((m) => m.id === id);
+      if (target?.dedupHash) {
+        apiClient.startLiveRecording(target.dedupHash, target.meetingUrl);
+      }
+    },
+    [detectedMeetings, updateMeetingStatus]
+  );
 
   // 8. Pause / Resume Recording
   const togglePauseRecording = useCallback(() => {
-    setIsPaused((prev) => !prev);
+    setIsPaused((prev) => {
+      const next = !prev;
+      if (next) {
+        webAudioRecorder.pause();
+      } else {
+        webAudioRecorder.resume();
+      }
+      return next;
+    });
   }, []);
 
   // 9. Stop Recording
   const stopRecording = useCallback(
-    (id: string, onComplete?: (meeting: DetectedMeeting, transcript: string) => void) => {
+    async (id: string, onComplete?: (meeting: DetectedMeeting, transcript: string) => void) => {
       const target = detectedMeetings.find((m) => m.id === id);
       setActiveRecordingMeetingId(null);
       setRecordingSeconds(0);
       setIsPaused(false);
+      setAudioPowerLevel(0);
+
+      // Stop Audio Recording & compile audio blob
+      const audioBlob = await webAudioRecorder.stop();
 
       if (target) {
         updateMeetingStatus(id, "transcribing");
-        const sampleTranscript = target.sampleTranscriptPreset || SAMPLE_ZOOM_TRANSCRIPT;
+
+        let resolvedTranscript = target.sampleTranscriptPreset || SAMPLE_ZOOM_TRANSCRIPT;
+
+        // If audio blob is captured in live mode, transcribe via backend STT service
+        if (audioBlob && !isDemoMode) {
+          try {
+            const sttResult = await apiClient.transcribeAudio({
+              audioBlob,
+              meetingId: id,
+              knownAttendees: target.attendees,
+            });
+            if (sttResult && (sttResult.rawVtt || sttResult.sanitizedText)) {
+              resolvedTranscript = sttResult.rawVtt || sttResult.sanitizedText;
+            }
+          } catch (e) {
+            console.warn("[useMeetRecord] Live transcription fallback:", e);
+          }
+        }
 
         setTimeout(() => {
           updateMeetingStatus(id, "completed");
           if (onComplete) {
-            onComplete(target, sampleTranscript);
+            onComplete(target, resolvedTranscript);
           }
-        }, 1200);
+        }, 800);
       }
     },
-    [detectedMeetings, updateMeetingStatus]
+    [detectedMeetings, isDemoMode, updateMeetingStatus]
   );
 
   // 10. Quick Join via direct Google Meet URL

@@ -4,6 +4,23 @@ import { API_BASE_URL, getApiEndpoint } from "../config/appConfig";
 
 export class MeetRecordApiClient {
   private isBackendAvailable: boolean | null = null;
+  private currentUserId: string | null = null;
+  private currentUserEmail: string | null = null;
+  private currentUserName: string | null = null;
+
+  public setSessionContext(userId?: string | null, email?: string | null, name?: string | null): void {
+    this.currentUserId = userId || null;
+    this.currentUserEmail = email || null;
+    this.currentUserName = name || null;
+  }
+
+  private getAuthHeaders(customHeaders: Record<string, string> = {}): Record<string, string> {
+    const headers: Record<string, string> = { ...customHeaders };
+    if (this.currentUserId) headers["x-user-id"] = this.currentUserId;
+    if (this.currentUserEmail) headers["x-user-email"] = this.currentUserEmail;
+    if (this.currentUserName) headers["x-user-name"] = this.currentUserName;
+    return headers;
+  }
 
   private async checkAvailability(): Promise<boolean> {
     if (this.isBackendAvailable !== null) return this.isBackendAvailable;
@@ -79,6 +96,7 @@ export class MeetRecordApiClient {
             organization: params.email.split("@")[1] || "Workspace",
             provider: "google",
           };
+          this.setSessionContext(fallbackUser.id, fallbackUser.email, fallbackUser.name);
           return {
             user: fallbackUser,
             session: {
@@ -93,7 +111,7 @@ export class MeetRecordApiClient {
 
       const res = await fetch(getApiEndpoint("/auth/google/exchange"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: this.getAuthHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify(params),
       });
 
@@ -101,6 +119,7 @@ export class MeetRecordApiClient {
       const json = await res.json();
 
       if (json.success && json.user) {
+        this.setSessionContext(json.user.id, json.user.email, json.user.name);
         return {
           user: json.user,
           session: json.session || {
@@ -124,9 +143,7 @@ export class MeetRecordApiClient {
       const available = await this.checkAvailability();
       if (!available) return null;
 
-      const headers: Record<string, string> = {};
-      if (userId) headers["x-user-id"] = userId;
-
+      const headers = this.getAuthHeaders(userId ? { "x-user-id": userId } : {});
       const res = await fetch(getApiEndpoint("/auth/session"), { headers });
       if (!res.ok) return null;
 
@@ -150,11 +167,10 @@ export class MeetRecordApiClient {
   public async logout(userId?: string): Promise<boolean> {
     try {
       const available = await this.checkAvailability();
+      this.setSessionContext(null, null, null);
       if (!available) return true;
 
-      const headers: Record<string, string> = {};
-      if (userId) headers["x-user-id"] = userId;
-
+      const headers = this.getAuthHeaders(userId ? { "x-user-id": userId } : {});
       const res = await fetch(getApiEndpoint("/auth/logout"), { method: "POST", headers });
       return res.ok;
     } catch (e) {
@@ -173,7 +189,7 @@ export class MeetRecordApiClient {
 
       const res = await fetch(getApiEndpoint("/auth/google/exchange"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: this.getAuthHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ email, name: name || email.split("@")[0] }),
       });
       return res.ok;
@@ -195,7 +211,9 @@ export class MeetRecordApiClient {
       const available = await this.checkAvailability();
       if (!available) return null;
 
-      const res = await fetch(getApiEndpoint("/calendar/events"));
+      const res = await fetch(getApiEndpoint("/calendar/events"), {
+        headers: this.getAuthHeaders(),
+      });
       if (!res.ok) return null;
 
       const json = await res.json();
@@ -220,7 +238,10 @@ export class MeetRecordApiClient {
       const available = await this.checkAvailability();
       if (!available) return null;
 
-      const res = await fetch(getApiEndpoint("/calendar/sync"), { method: "POST" });
+      const res = await fetch(getApiEndpoint("/calendar/sync"), {
+        method: "POST",
+        headers: this.getAuthHeaders(),
+      });
       if (!res.ok) return null;
 
       const json = await res.json();
@@ -246,7 +267,7 @@ export class MeetRecordApiClient {
 
       const res = await fetch(getApiEndpoint("/recording/start"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: this.getAuthHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ dedupHash, meetingUrl }),
       });
       return res.ok;
@@ -254,6 +275,40 @@ export class MeetRecordApiClient {
       console.warn("[ApiClient] Start recording fallback", e);
       return true;
     }
+  }
+
+  /**
+   * Sends audio blob to backend Speech-to-Text service for live transcription.
+   */
+  public async transcribeAudio(params: {
+    audioBlob: Blob;
+    meetingId?: string;
+    knownAttendees?: Array<{ name: string; email: string }>;
+  }): Promise<{ rawVtt: string; sanitizedText: string; segments: any[] } | null> {
+    try {
+      const available = await this.checkAvailability();
+      if (!available) return null;
+
+      const formData = new FormData();
+      formData.append("audio", params.audioBlob, "meeting_audio.webm");
+      if (params.meetingId) formData.append("meetingId", params.meetingId);
+      if (params.knownAttendees) formData.append("knownAttendees", JSON.stringify(params.knownAttendees));
+
+      const res = await fetch(getApiEndpoint("/recording/transcribe"), {
+        method: "POST",
+        headers: this.getAuthHeaders(),
+        body: formData,
+      });
+
+      if (!res.ok) return null;
+      const json = await res.json();
+      if (json.success && json.data) {
+        return json.data;
+      }
+    } catch (e) {
+      console.warn("[ApiClient] Live audio transcription error:", e);
+    }
+    return null;
   }
 
   /**
@@ -266,7 +321,7 @@ export class MeetRecordApiClient {
 
       const res = await fetch(getApiEndpoint("/recording/stop"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: this.getAuthHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ dedupHash }),
       });
 
