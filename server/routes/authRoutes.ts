@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import crypto from "crypto";
 import { config } from "../config.js";
 import { tokenVault } from "../security/tokenVault.js";
+import { oauthStateStore, OAuthStateRecord } from "../security/stateStore.js";
 import { requireAuth } from "../middleware/authMiddleware.js";
 import { authRateLimiter } from "../middleware/rateLimiter.js";
 
@@ -9,16 +10,6 @@ export const authRouter = Router();
 
 // Apply Rate Limiting to all authentication routes
 authRouter.use(authRateLimiter);
-
-interface OAuthStateRecord {
-  createdAt: number;
-  redirectUri: string;
-  codeChallenge?: string;
-  codeChallengeMethod?: string;
-}
-
-// In-memory & persistent cache for OAuth CSRF state nonces & PKCE challenges (TTL: 10 minutes)
-const oauthStateCache = new Map<string, OAuthStateRecord>();
 
 // Ephemeral One-Time Auth Codes for Desktop Token Exchange (TTL: 5 minutes)
 const desktopAuthCodeCache = new Map<
@@ -32,20 +23,15 @@ const desktopAuthCodeCache = new Map<
   }
 >();
 
-// Periodic Cleanup Daemon (Runs every 60s)
+// Periodic Cleanup Daemon for desktop auth codes (Runs every 60s)
 setInterval(() => {
   const now = Date.now();
-  for (const [state, data] of oauthStateCache.entries()) {
-    if (now - data.createdAt > 10 * 60 * 1000) {
-      oauthStateCache.delete(state);
-    }
-  }
   for (const [code, data] of desktopAuthCodeCache.entries()) {
     if (now - data.createdAt > 5 * 60 * 1000) {
       desktopAuthCodeCache.delete(code);
     }
   }
-}, 60 * 1000);
+}, 60 * 1000).unref();
 
 /**
  * Validates whether a redirect URI is permitted.
@@ -78,13 +64,12 @@ authRouter.get("/google/url", (req: Request, res: Response) => {
     });
   }
 
-  const state = crypto.randomBytes(24).toString("hex");
-
-  oauthStateCache.set(state, {
-    createdAt: Date.now(),
+  // Generate cryptographically signed state persisted to memory & disk
+  const state = oauthStateStore.generateState({
     redirectUri: requestedRedirectUri,
     codeChallenge,
     codeChallengeMethod,
+    flowType: requestedRedirectUri.startsWith("noteflow://") || Boolean(codeChallenge) ? "desktop" : "web",
   });
 
   const rootUrl = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -113,7 +98,7 @@ authRouter.get("/google/url", (req: Request, res: Response) => {
 /**
  * GET /api/auth/google/callback
  * Handles the Google OAuth 2.0 browser redirect.
- * 1. Validates the CSRF state nonce from oauthStateCache.
+ * 1. Atomically consumes and validates the CSRF state nonce from oauthStateStore.
  * 2. Exchanges authorization code with Google token endpoint.
  * 3. Retrieves user profile info and stores encrypted tokens in TokenVault.
  * 4. Redirects to desktop companion (noteflow://auth/callback) or web app (FRONTEND_URL).
@@ -124,18 +109,16 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
     const state = req.query.state as string | undefined;
     const error = req.query.error as string | undefined;
 
-    // 1. Retrieve and validate CSRF state nonce
-    const stateRecord = state ? oauthStateCache.get(state) : undefined;
-    if (state) {
-      oauthStateCache.delete(state);
-    }
+    // 1. Atomically retrieve and consume CSRF state nonce (single-use)
+    const stateRecord = state ? oauthStateStore.consumeState(state) : null;
 
     // Determine target redirect URI (fallback to configured frontendUrl)
     const targetRedirectUri = stateRecord?.redirectUri || config.frontendUrl;
     const isDesktopFlow =
       targetRedirectUri.startsWith("noteflow://") ||
       targetRedirectUri.includes("/auth/desktop-login") ||
-      Boolean(stateRecord?.codeChallenge);
+      Boolean(stateRecord?.codeChallenge) ||
+      stateRecord?.flowType === "desktop";
 
     // 2. Handle Google-side user denial or access error
     if (error) {
@@ -357,11 +340,10 @@ authRouter.post("/google/exchange", async (req: Request, res: Response) => {
   try {
     const { code, state, email, name, avatarUrl, code_challenge } = req.body;
 
-    // Validate CSRF State if provided
-    let stateRecord: OAuthStateRecord | undefined;
-    if (state) {
-      stateRecord = oauthStateCache.get(state);
-      oauthStateCache.delete(state);
+    // Validate and consume CSRF State if code exchange is being performed
+    let stateRecord: OAuthStateRecord | null = null;
+    if (code && state) {
+      stateRecord = oauthStateStore.consumeState(state);
     }
 
     let userEmail = email;

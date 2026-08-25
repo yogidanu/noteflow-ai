@@ -90,6 +90,63 @@ export function useAuth() {
     }
   }, [isOnboardingComplete]);
 
+  // Process OAuth Callback parameters and messages from popup or redirect
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    // Check URL parameters on redirect return
+    const params = new URLSearchParams(window.location.search);
+    const cbUserId = params.get("userId");
+    const cbEmail = params.get("email");
+    const cbName = params.get("name");
+    const cbError = params.get("error");
+    const cbAvatar = params.get("avatarUrl");
+
+    if (cbError) {
+      setAuthError(cbError === "access_denied" ? "Google sign-in was cancelled." : `Authentication error: ${cbError}`);
+      window.history.replaceState({}, document.title, window.location.pathname);
+      return;
+    }
+
+    if (cbEmail) {
+      const newUser: UserProfile = {
+        id: cbUserId || `usr_${Date.now()}`,
+        email: cbEmail,
+        name: cbName || cbEmail.split("@")[0],
+        avatarUrl: cbAvatar || undefined,
+        organization: cbEmail.split("@")[1] || "Workspace",
+        provider: "google",
+      };
+
+      // If opened inside popup window, broadcast to parent window and close
+      if (window.opener && window.opener !== window) {
+        try {
+          window.opener.postMessage({ type: "NOTEFLOW_AUTH_SUCCESS", user: newUser }, window.location.origin);
+          window.close();
+          return;
+        } catch {
+          // Continue standard state update if postMessage fails
+        }
+      }
+
+      setUser(newUser);
+      setIsDemoMode(false);
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
+    // Listen for popup auth messages
+    const handleAuthMessage = (event: MessageEvent) => {
+      if (event.data?.type === "NOTEFLOW_AUTH_SUCCESS" && event.data?.user) {
+        setUser(event.data.user);
+        setIsAuthenticating(false);
+        authLockRef.current = false;
+      }
+    };
+
+    window.addEventListener("message", handleAuthMessage);
+    return () => window.removeEventListener("message", handleAuthMessage);
+  }, []);
+
   // Validate active session on startup / restoration
   useEffect(() => {
     async function validateSessionOnMount() {
@@ -171,28 +228,26 @@ export function useAuth() {
         );
 
         if (popup) {
-          // Poll for popup closure or message completion
-          const pollTimer = window.setInterval(async () => {
+          // Poll for popup closure
+          const pollTimer = window.setInterval(() => {
             if (popup.closed) {
               window.clearInterval(pollTimer);
               authLockRef.current = false;
               setIsAuthenticating(false);
-              if (!user) {
-                setAuthError("Google sign-in was cancelled.");
-              }
             }
           }, 600);
+
+          return null;
         }
       }
 
-      // 3. Fallback / Direct Exchange handler (for development or direct identity submission)
+      // 3. Fallback / Direct Exchange handler (when popup blocked or in mock/offline mode)
       const targetEmail = fallbackEmail || "sarah.chen@acme-corp.com";
       const targetName = fallbackName || "Sarah Chen";
 
       const exchangeResult = await apiClient.exchangeGoogleAuth({
         email: targetEmail,
         name: targetName,
-        state: authData?.state,
       });
 
       if (exchangeResult && exchangeResult.user) {
