@@ -297,6 +297,10 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
       hasAvatar: Boolean(userAvatar),
     });
 
+    const returnedScopes = tokenData?.scope ? tokenData.scope.split(" ") : (stateRecord?.scopes || config.google.authScopes);
+    const existingSession = tokenVault.getSafeSession(userId);
+    const mergedScopes = Array.from(new Set([...(existingSession?.scopes || []), ...returnedScopes]));
+
     // 6. Encrypt and persist canonical tokens and profile into secure vault
     tokenVault.saveTokens({
       userId,
@@ -310,7 +314,7 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
       accessToken,
       refreshToken,
       expiresInSeconds,
-      scopes: config.google.scopes,
+      scopes: mergedScopes,
     });
 
     // 7. Route back to Client (Desktop Protocol vs Web Application)
@@ -573,7 +577,7 @@ authRouter.post("/google/exchange", async (req: Request, res: Response) => {
       accessToken,
       refreshToken,
       expiresInSeconds,
-      scopes: config.google.scopes,
+      scopes: Array.from(new Set([...(tokenVault.getSafeSession(userId)?.scopes || []), ...(req.body.scopes || config.google.allScopes)])),
     });
 
     const safeSession = tokenVault.getSafeSession(userId);

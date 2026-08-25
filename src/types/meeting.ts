@@ -127,9 +127,13 @@ export type RefinementPromptType =
   | "action_focused"
   | "executive";
 
+export type CalendarStatusType = "NOT_CONNECTED" | "CONNECTING" | "CONNECTED" | "REAUTH_REQUIRED" | "ERROR";
+
 export interface CalendarConnectionState {
   isConnected: boolean;
+  status: CalendarStatusType;
   accountEmail: string | null;
   lastSyncedAt: string | null;
   syncToken?: string;
+  errorMessage?: string | null;
 }

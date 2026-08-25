@@ -175,6 +175,18 @@ export const OAuthConsentModal: React.FC<OAuthConsentModalProps> = ({
             </div>
           ) : (
             <div className="space-y-3 text-xs">
+              {calendarState?.status === "REAUTH_REQUIRED" && (
+                <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-800 dark:text-amber-300 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-semibold">Re-authorization Required</span>
+                    <p className="text-[11px] mt-0.5">
+                      Calendar access was revoked or expired. Please click below to re-authorize NoteFlow with read-only calendar access.
+                    </p>
+                  </div>
+                </div>
+              )}
+
               <div className="space-y-2 text-[var(--text-secondary)]">
                 <div className="flex items-start gap-2.5">
                   <CheckCircle2 className="w-4 h-4 text-[var(--color-success)] shrink-0 mt-0.5" />
@@ -253,7 +265,7 @@ export const OAuthConsentModal: React.FC<OAuthConsentModalProps> = ({
                   <span>Authorizing Calendar...</span>
                 ) : (
                   <>
-                    <span>Authorize Google Calendar</span>
+                    <span>{calendarState?.status === "REAUTH_REQUIRED" ? "Reconnect Google Calendar" : "Authorize Google Calendar"}</span>
                     <ArrowRight className="w-3.5 h-3.5" aria-hidden="true" />
                   </>
                 )}

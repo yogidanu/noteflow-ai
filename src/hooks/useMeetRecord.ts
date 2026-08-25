@@ -84,7 +84,13 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
   const [calendarState, setCalendarState] = useState<CalendarConnectionState>(() => {
     try {
       const saved = localStorage.getItem(CALENDAR_STORAGE_KEY);
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          ...parsed,
+          status: parsed.status || (parsed.isConnected ? "CONNECTED" : "NOT_CONNECTED"),
+        };
+      }
     } catch (e) {
       console.error("Failed to load calendar state", e);
     }
@@ -92,12 +98,14 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
     if (isDemoMode) {
       return {
         isConnected: true,
+        status: "CONNECTED",
         accountEmail: userEmail || "alex.product@acme-corp.internal",
         lastSyncedAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       };
     }
     return {
       isConnected: false,
+      status: "NOT_CONNECTED",
       accountEmail: null,
       lastSyncedAt: null,
     };
@@ -175,17 +183,51 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
     }
   }, [detectionState]);
 
+  // Initial check on mount: verify calendar token health if previously connected
+  useEffect(() => {
+    async function checkCalendarHealthOnMount() {
+      if (isDemoMode || !calendarState.isConnected) return;
+
+      try {
+        const check = await apiClient.fetchCalendarEvents();
+        if (check.requiresReconnect) {
+          console.warn("[useMeetRecord] Google Calendar authorization was revoked or expired.");
+          setCalendarState((prev) => ({
+            ...prev,
+            isConnected: false,
+            status: "REAUTH_REQUIRED",
+            errorMessage: "Google Calendar access was revoked. Please reconnect.",
+          }));
+        } else if (check.success && Array.isArray(check.events)) {
+          setDetectedMeetings(check.events);
+          setCalendarState((prev) => ({
+            ...prev,
+            status: "CONNECTED",
+            lastSyncedAt: check.lastSyncedAt || prev.lastSyncedAt,
+          }));
+        }
+      } catch (e) {
+        console.warn("[useMeetRecord] Calendar health check error", e);
+      }
+    }
+
+    checkCalendarHealthOnMount();
+  }, [isDemoMode]);
+
   // 1. Connect Google Calendar
   const connectCalendar = useCallback(async (accountEmail: string) => {
     setIsSyncingCalendar(true);
     setCalendarError(null);
+    setCalendarState((prev) => ({ ...prev, status: "CONNECTING" }));
 
     try {
       if (isDemoMode) {
         setCalendarState({
           isConnected: true,
+          status: "CONNECTED",
           accountEmail,
           lastSyncedAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          errorMessage: null,
         });
         setDetectedMeetings(DEMO_DETECTED_MEETINGS);
         setIsSyncingCalendar(false);
@@ -221,19 +263,45 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
 
       // 2. Fetch real calendar meetings after authorization
       const gcalEvents = await apiClient.fetchCalendarEvents();
-      if (gcalEvents && Array.isArray(gcalEvents.events)) {
+      if (gcalEvents.success && Array.isArray(gcalEvents.events)) {
         const syncTime = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
         setCalendarState({
           isConnected: true,
+          status: "CONNECTED",
           accountEmail: gcalEvents.accountEmail || accountEmail,
           lastSyncedAt: gcalEvents.lastSyncedAt || syncTime,
+          errorMessage: null,
         });
         setDetectedMeetings(gcalEvents.events);
+      } else if (gcalEvents.requiresReconnect) {
+        setCalendarState({
+          isConnected: false,
+          status: "REAUTH_REQUIRED",
+          accountEmail,
+          lastSyncedAt: null,
+          errorMessage: "Google Calendar authorization was cancelled or denied.",
+        });
+        setCalendarError("Google Calendar authorization was cancelled or denied.");
       } else {
+        setCalendarState({
+          isConnected: false,
+          status: "ERROR",
+          accountEmail: null,
+          lastSyncedAt: null,
+          errorMessage: gcalEvents.error || "Failed to authorize Google Calendar.",
+        });
+        setCalendarError(gcalEvents.error || "Failed to authorize Google Calendar.");
         setDetectedMeetings([]);
       }
     } catch (err: any) {
       console.error("[useMeetRecord] Connect calendar error:", err);
+      setCalendarState({
+        isConnected: false,
+        status: "ERROR",
+        accountEmail: null,
+        lastSyncedAt: null,
+        errorMessage: err?.message || "Failed to authorize Google Calendar.",
+      });
       setCalendarError(err.message || "Failed to authorize Google Calendar.");
     } finally {
       setIsSyncingCalendar(false);
@@ -244,8 +312,10 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
   const disconnectCalendar = useCallback(() => {
     setCalendarState({
       isConnected: false,
+      status: "NOT_CONNECTED",
       accountEmail: null,
       lastSyncedAt: null,
+      errorMessage: null,
     });
     setDetectedMeetings([]);
     setActiveRecordingMeetingId(null);
@@ -321,12 +391,23 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
       }
 
       const res = await apiClient.syncCalendar();
-      if (res && Array.isArray(res.events)) {
+      if (res.success && Array.isArray(res.events)) {
         setDetectedMeetings(res.events);
         setCalendarState((prev) => ({
           ...prev,
+          isConnected: true,
+          status: "CONNECTED",
           lastSyncedAt: res.lastSyncedAt || new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          errorMessage: null,
         }));
+      } else if (res.requiresReconnect) {
+        setCalendarState((prev) => ({
+          ...prev,
+          isConnected: false,
+          status: "REAUTH_REQUIRED",
+          errorMessage: "Google Calendar authorization was revoked or expired. Please reconnect.",
+        }));
+        setCalendarError("Google Calendar authorization was revoked or expired. Please reconnect.");
       }
     } catch (err: any) {
       console.error("[useMeetRecord] Sync calendar error:", err);

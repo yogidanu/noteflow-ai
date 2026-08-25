@@ -101,6 +101,7 @@ export class MeetRecordApiClient {
             user: fallbackUser,
             session: {
               isConnected: true,
+              status: "CONNECTED",
               accountEmail: params.email,
               lastSyncedAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
             },
@@ -122,11 +123,17 @@ export class MeetRecordApiClient {
         this.setSessionContext(json.user.id, json.user.email, json.user.name);
         return {
           user: json.user,
-          session: json.session || {
-            isConnected: true,
-            accountEmail: json.user.email,
-            lastSyncedAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-          },
+          session: json.session
+            ? {
+                ...json.session,
+                status: json.session.isConnected ? "CONNECTED" : "NOT_CONNECTED",
+              }
+            : {
+                isConnected: true,
+                status: "CONNECTED",
+                accountEmail: json.user.email,
+                lastSyncedAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+              },
         };
       }
     } catch (e) {
@@ -151,6 +158,7 @@ export class MeetRecordApiClient {
       if (json.success && json.session) {
         return {
           isConnected: json.session.isConnected,
+          status: json.session.isConnected ? "CONNECTED" : "NOT_CONNECTED",
           accountEmail: json.session.email,
           lastSyncedAt: json.session.lastSyncedAt,
         };
@@ -285,58 +293,87 @@ export class MeetRecordApiClient {
    * Fetches detected upcoming meetings from backend.
    */
   public async fetchCalendarEvents(): Promise<{
+    success: boolean;
     events: DetectedMeeting[];
     accountEmail?: string;
     lastSyncedAt?: string;
-  } | null> {
+    error?: string;
+    requiresReconnect?: boolean;
+  }> {
     try {
       const available = await this.checkAvailability();
-      if (!available) return null;
+      if (!available) return { success: false, events: [], error: "BACKEND_UNAVAILABLE" };
 
       const res = await fetch(getApiEndpoint("/calendar/events"), {
         headers: this.getAuthHeaders(),
       });
-      if (!res.ok) return null;
+      const json = await res.json().catch(() => null);
 
-      const json = await res.json();
-      if (json.success && Array.isArray(json.data)) {
+      if (!res.ok) {
         return {
+          success: false,
+          events: [],
+          error: json?.error || `HTTP_${res.status}`,
+          requiresReconnect: json?.requiresReconnect || res.status === 401,
+        };
+      }
+
+      if (json && json.success && Array.isArray(json.data)) {
+        return {
+          success: true,
           events: json.data,
           accountEmail: json.accountEmail,
           lastSyncedAt: json.lastSyncedAt,
         };
       }
-    } catch (e) {
-      console.warn("[ApiClient] Calendar events fallback", e);
+    } catch (e: any) {
+      console.warn("[ApiClient] Calendar events error", e);
+      return { success: false, events: [], error: e?.message || "NETWORK_ERROR" };
     }
-    return null;
+    return { success: false, events: [], error: "UNKNOWN_ERROR" };
   }
 
   /**
    * Triggers manual calendar sync on backend.
    */
-  public async syncCalendar(): Promise<{ events: DetectedMeeting[]; lastSyncedAt: string } | null> {
+  public async syncCalendar(): Promise<{
+    success: boolean;
+    events: DetectedMeeting[];
+    lastSyncedAt?: string;
+    error?: string;
+    requiresReconnect?: boolean;
+  }> {
     try {
       const available = await this.checkAvailability();
-      if (!available) return null;
+      if (!available) return { success: false, events: [], error: "BACKEND_UNAVAILABLE" };
 
       const res = await fetch(getApiEndpoint("/calendar/sync"), {
         method: "POST",
         headers: this.getAuthHeaders(),
       });
-      if (!res.ok) return null;
+      const json = await res.json().catch(() => null);
 
-      const json = await res.json();
-      if (json.success && Array.isArray(json.data)) {
+      if (!res.ok) {
         return {
+          success: false,
+          events: [],
+          error: json?.error || `HTTP_${res.status}`,
+          requiresReconnect: json?.requiresReconnect || res.status === 401,
+        };
+      }
+
+      if (json && json.success && Array.isArray(json.data)) {
+        return {
+          success: true,
           events: json.data,
           lastSyncedAt: json.lastSyncedAt,
         };
       }
-    } catch (e) {
-      console.warn("[ApiClient] Sync calendar fallback", e);
+    } catch (e: any) {
+      console.warn("[ApiClient] Sync calendar error", e);
+      return { success: false, events: [], error: e?.message || "NETWORK_ERROR" };
     }
-    return null;
+    return { success: false, events: [], error: "UNKNOWN_ERROR" };
   }
 
   /**

@@ -227,6 +227,96 @@ async function runCalendarTests() {
   }
 
   // -------------------------------------------------------------
+  // Test 6: Reconnection Flow After Disconnect
+  // -------------------------------------------------------------
+  try {
+    // Reconnect test user with fresh calendar scopes
+    tokenVault.saveTokens({
+      userId: testUserId,
+      email: testUserEmail,
+      name: "Alex Architect",
+      accessToken: "ya29.reconnected_calendar_token",
+      refreshToken: "1//refresh_token_reconnected_99",
+      expiresInSeconds: 3600,
+      scopes: config.google.allScopes,
+    });
+
+    const reconnectedEvents = await calendarService.fetchUpcomingEvents(testUserId);
+    if (reconnectedEvents && reconnectedEvents.accountEmail === testUserEmail) {
+      results.push({
+        id: 6,
+        testCase: "Reconnect Calendar Flow & State Recovery",
+        expectedResult: "User can successfully re-authorize and recover calendar integration.",
+        actualResult: `Calendar successfully reconnected for ${reconnectedEvents.accountEmail}.`,
+        status: "PASS",
+        severity: "HIGH",
+        evidence: `nextSyncToken: ${reconnectedEvents.nextSyncToken}`,
+      });
+    } else {
+      throw new Error("Reconnection failed to restore events");
+    }
+  } catch (err: any) {
+    results.push({
+      id: 6,
+      testCase: "Reconnect Calendar Flow & State Recovery",
+      expectedResult: "Successful reconnection.",
+      actualResult: err.message,
+      status: "FAIL",
+      severity: "HIGH",
+      evidence: err.stack,
+    });
+  }
+
+  // -------------------------------------------------------------
+  // Test 7: Multi-User Account Isolation (Tenant Boundary)
+  // -------------------------------------------------------------
+  try {
+    const userB_Id = "usr_gcal_isolated_user_b";
+    // User B only has basic login scope
+    tokenVault.saveTokens({
+      userId: userB_Id,
+      email: "elena.product@enterprise.io",
+      name: "Elena Product",
+      accessToken: "ya29.user_b_basic_token",
+      expiresInSeconds: 3600,
+      scopes: config.google.authScopes,
+    });
+
+    let userBRejected = false;
+    try {
+      await calendarService.fetchUpcomingEvents(userB_Id);
+    } catch (err: any) {
+      if (err.message === "CALENDAR_NOT_AUTHORIZED") {
+        userBRejected = true;
+      }
+    }
+
+    if (userBRejected) {
+      results.push({
+        id: 7,
+        testCase: "Multi-User Calendar Authorization Isolation",
+        expectedResult: "User A connecting calendar does not silently grant User B access.",
+        actualResult: "User B correctly blocked with CALENDAR_NOT_AUTHORIZED.",
+        status: "PASS",
+        severity: "CRITICAL",
+        evidence: "Tenant isolation between user A and user B verified in TokenVault.",
+      });
+    } else {
+      throw new Error("User B was able to access calendar without authorization");
+    }
+  } catch (err: any) {
+    results.push({
+      id: 7,
+      testCase: "Multi-User Calendar Authorization Isolation",
+      expectedResult: "Strict isolation across users.",
+      actualResult: err.message,
+      status: "FAIL",
+      severity: "CRITICAL",
+      evidence: err.stack,
+    });
+  }
+
+  // -------------------------------------------------------------
   // Print Test Report
   // -------------------------------------------------------------
   console.log("=================================================");

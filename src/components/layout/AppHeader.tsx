@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Sparkles, Calendar, Menu, RefreshCw, Sun, Moon, Monitor, Check, User, LogOut, Compass, Bell, BellOff, Sliders } from "lucide-react";
+import { Sparkles, Calendar, Menu, RefreshCw, Sun, Moon, Monitor, Check, User, LogOut, Compass, Bell, BellOff, Sliders, AlertTriangle } from "lucide-react";
 import { CalendarConnectionState } from "../../types/meeting";
 import { ThemeMode } from "../../hooks/useTheme";
 import { UserProfile } from "../../hooks/useAuth";
@@ -158,7 +158,18 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
         )}
 
         {/* Google Calendar Status Pill */}
-        {calendarState.isConnected ? (
+        {calendarState.status === "REAUTH_REQUIRED" ? (
+          <button
+            type="button"
+            onClick={onOpenOAuthModal}
+            aria-label="Google Calendar access was revoked. Click to reconnect."
+            className="hidden sm:flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-xs font-medium transition-colors cursor-pointer"
+            title="Google Calendar permission revoked. Click to reconnect."
+          >
+            <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+            <span>Reconnect Calendar</span>
+          </button>
+        ) : calendarState.isConnected ? (
           <button
             type="button"
             onClick={onOpenOAuthModal}
