@@ -11,6 +11,7 @@ interface AppHeaderProps {
   isRecordingActive: boolean;
   onOpenOAuthModal: () => void;
   onOpenDetectionModal?: () => void;
+  onOpenProfileModal?: () => void;
   isDetectionEnabled?: boolean;
   onResetSamples: () => void;
   currentView: "feed" | "workspace";
@@ -30,6 +31,7 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
   isRecordingActive,
   onOpenOAuthModal,
   onOpenDetectionModal,
+  onOpenProfileModal,
   isDetectionEnabled = false,
   onResetSamples,
   currentView,
@@ -310,6 +312,19 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
                     </span>
                   )}
                 </div>
+
+                {onOpenProfileModal && (
+                  <button
+                    onClick={() => {
+                      setIsUserMenuOpen(false);
+                      onOpenProfileModal();
+                    }}
+                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-subtle)] transition-colors cursor-pointer"
+                  >
+                    <User className="w-3.5 h-3.5 text-[var(--text-muted)]" />
+                    <span>Profile & Settings</span>
+                  </button>
+                )}
 
                 {onOpenDetectionModal && (
                   <button

@@ -651,6 +651,65 @@ authRouter.get("/session", requireAuth, (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/auth/profile
+ * Returns the NoteFlow user profile for the authenticated user.
+ */
+authRouter.get("/profile", requireAuth, (req: Request, res: Response) => {
+  const profile = tokenVault.getProfile(req.user!.userId);
+
+  if (!profile) {
+    return res.status(404).json({
+      success: false,
+      error: "PROFILE_NOT_FOUND",
+      message: "No NoteFlow profile was found for the active user.",
+    });
+  }
+
+  res.json({
+    success: true,
+    profile,
+  });
+});
+
+/**
+ * PUT /api/auth/profile
+ * Updates the NoteFlow user profile and marks profileCompleted = true.
+ */
+authRouter.put("/profile", requireAuth, (req: Request, res: Response) => {
+  const { fullName, city, country, avatarUrl, organization } = req.body || {};
+
+  if (fullName !== undefined && typeof fullName === "string" && fullName.trim().length < 2) {
+    return res.status(400).json({
+      success: false,
+      error: "INVALID_FULL_NAME",
+      message: "Full name must be at least 2 characters.",
+    });
+  }
+
+  const updatedProfile = tokenVault.updateProfile(req.user!.userId, {
+    fullName,
+    city,
+    country,
+    avatarUrl,
+    organization,
+  });
+
+  if (!updatedProfile) {
+    return res.status(404).json({
+      success: false,
+      error: "USER_NOT_FOUND",
+      message: "User record does not exist in token vault.",
+    });
+  }
+
+  res.json({
+    success: true,
+    message: "Profile updated successfully.",
+    profile: updatedProfile,
+  });
+});
+
+/**
  * POST /api/auth/logout
  * Revokes active user session and purges vaulted credentials.
  */

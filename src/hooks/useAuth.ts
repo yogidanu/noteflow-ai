@@ -11,7 +11,10 @@ export interface UserProfile {
   firstName?: string;
   lastName?: string;
   avatarUrl?: string;
+  city?: string;
+  country?: string;
   organization?: string;
+  profileCompleted?: boolean;
   provider: "google" | "email" | "demo";
 }
 
@@ -133,6 +136,7 @@ export function useAuth() {
         lastName: cbLastName || undefined,
         avatarUrl: cbAvatar || undefined,
         organization: cbEmail.split("@")[1] || "Workspace",
+        profileCompleted: false, // Will be verified via backend profile lookup
         provider: "google",
       };
 
@@ -150,6 +154,25 @@ export function useAuth() {
       setUser(newUser);
       setIsDemoMode(false);
       window.history.replaceState({}, document.title, window.location.pathname);
+
+      // Verify profile completion status from backend
+      apiClient.getUserProfile(newUser.id).then((profile) => {
+        if (profile) {
+          setUser((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  name: profile.fullName || prev.name,
+                  displayName: profile.fullName || prev.displayName,
+                  avatarUrl: profile.avatarUrl || prev.avatarUrl,
+                  city: profile.city,
+                  country: profile.country,
+                  profileCompleted: profile.profileCompleted,
+                }
+              : null
+          );
+        }
+      });
     }
 
     // Listen for popup auth messages
@@ -158,6 +181,24 @@ export function useAuth() {
         setUser(event.data.user);
         setIsAuthenticating(false);
         authLockRef.current = false;
+
+        apiClient.getUserProfile(event.data.user.id).then((profile) => {
+          if (profile) {
+            setUser((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    name: profile.fullName || prev.name,
+                    displayName: profile.fullName || prev.displayName,
+                    avatarUrl: profile.avatarUrl || prev.avatarUrl,
+                    city: profile.city,
+                    country: profile.country,
+                    profileCompleted: profile.profileCompleted,
+                  }
+                : null
+            );
+          }
+        });
       }
     };
 
@@ -165,7 +206,7 @@ export function useAuth() {
     return () => window.removeEventListener("message", handleAuthMessage);
   }, []);
 
-  // Validate active session on startup / restoration
+  // Validate active session and hydrate backend profile on startup / restoration
   useEffect(() => {
     async function validateSessionOnMount() {
       if (!user || isDemoMode) return;
@@ -176,13 +217,32 @@ export function useAuth() {
           if (!desktopSession || (desktopSession.expiresAt && desktopSession.expiresAt < Date.now())) {
             console.warn("[useAuth] Desktop session expired or revoked on startup");
             logout();
+            return;
           }
         } else {
           const backendSession = await apiClient.getSession(user.id);
           if (backendSession && !backendSession.isConnected) {
-            // Backend session inactive or revoked
             console.warn("[useAuth] Remote session was revoked or expired");
           }
+        }
+
+        // Hydrate latest user profile from NoteFlow TokenVault
+        const backendProfile = await apiClient.getUserProfile(user.id);
+        if (backendProfile) {
+          setUser((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  name: backendProfile.fullName || prev.name,
+                  displayName: backendProfile.fullName || prev.displayName,
+                  avatarUrl: backendProfile.avatarUrl || prev.avatarUrl,
+                  city: backendProfile.city || prev.city,
+                  country: backendProfile.country || prev.country,
+                  organization: backendProfile.organization || prev.organization,
+                  profileCompleted: backendProfile.profileCompleted,
+                }
+              : null
+          );
         }
       } catch (err) {
         console.warn("[useAuth] Session check fallback:", err);
@@ -193,86 +253,132 @@ export function useAuth() {
   }, [user?.id, isDemoMode]);
 
   /**
+   * Updates NoteFlow user profile on backend and local state.
+   */
+  const updateProfile = useCallback(
+    async (updates: {
+      fullName: string;
+      city?: string;
+      country?: string;
+      avatarUrl?: string;
+      organization?: string;
+    }) => {
+      if (!user) return null;
+
+      try {
+        const result = await apiClient.updateUserProfile(updates, user.id);
+        if (result) {
+          const updatedUser: UserProfile = {
+            ...user,
+            name: result.fullName,
+            displayName: result.fullName,
+            avatarUrl: result.avatarUrl || user.avatarUrl,
+            city: result.city,
+            country: result.country,
+            organization: result.organization || user.organization,
+            profileCompleted: true,
+          };
+          setUser(updatedUser);
+          return updatedUser;
+        }
+      } catch (err: any) {
+        console.error("[useAuth] Error updating profile:", err);
+        throw err;
+      }
+      return null;
+    },
+    [user]
+  );
+
+  /**
    * Initiates real Google OAuth 2.0 flow
    */
-  const loginWithGoogle = useCallback(async (fallbackEmail?: string, fallbackName?: string) => {
-    // Prevent duplicate attempts
-    if (authLockRef.current || isAuthenticating) {
-      console.warn("[useAuth] Authentication already in progress");
-      return;
-    }
-
-    authLockRef.current = true;
-    setIsAuthenticating(true);
-    setAuthError(null);
-
-    try {
-      // 1. Desktop Companion Path (PKCE + Deep Linking)
-      if (desktopBridge.isDesktop()) {
-        const session = await desktopBridge.loginWithPKCE();
-        if (session && session.email) {
-          const newUser: UserProfile = {
-            id: session.userId || `usr_${Date.now()}`,
-            email: session.email,
-            name: session.name || session.email.split("@")[0],
-            organization: session.email.split("@")[1] || "Workspace",
-            provider: "google",
-          };
-          setUser(newUser);
-          setIsDemoMode(false);
-          setIsOnboardingComplete(false);
-          authLockRef.current = false;
-          setIsAuthenticating(false);
-          return newUser;
-        } else {
-          throw new Error("Desktop login was cancelled or returned no session.");
-        }
+  const loginWithGoogle = useCallback(
+    async (fallbackEmail?: string, fallbackName?: string) => {
+      if (authLockRef.current || isAuthenticating) {
+        console.warn("[useAuth] Authentication already in progress");
+        return;
       }
 
-      // 2. Web Application Path: Request OAuth Authorization URL
-      const authData = await apiClient.getGoogleAuthUrl();
+      authLockRef.current = true;
+      setIsAuthenticating(true);
+      setAuthError(null);
 
-      if (authData && authData.authUrl && window && window.open) {
-        // Open Google OAuth popup window
-        const width = 500;
-        const height = 600;
-        const left = window.screenX + (window.outerWidth - width) / 2;
-        const top = window.screenY + (window.outerHeight - height) / 2.5;
+      try {
+        // 1. Desktop Companion Path (PKCE + Deep Linking)
+        if (desktopBridge.isDesktop()) {
+          const session = await desktopBridge.loginWithPKCE();
+          if (session && session.email) {
+            const newUser: UserProfile = {
+              id: session.userId || `usr_${Date.now()}`,
+              email: session.email,
+              name: session.name || session.email.split("@")[0],
+              displayName: session.name,
+              organization: session.email.split("@")[1] || "Workspace",
+              profileCompleted: false,
+              provider: "google",
+            };
+            setUser(newUser);
+            setIsDemoMode(false);
+            setIsOnboardingComplete(false);
+            authLockRef.current = false;
+            setIsAuthenticating(false);
 
-        const popup = window.open(
-          authData.authUrl,
-          "NoteFlow Google Auth",
-          `width=${width},height=${height},left=${left},top=${top},status=no,resizable=yes`
-        );
+            apiClient.getUserProfile(newUser.id).then((p) => {
+              if (p) {
+                setUser((prev) => (prev ? { ...prev, profileCompleted: p.profileCompleted } : null));
+              }
+            });
 
-        if (popup) {
-          // Poll for popup closure
-          const pollTimer = window.setInterval(() => {
-            if (popup.closed) {
-              window.clearInterval(pollTimer);
-              authLockRef.current = false;
-              setIsAuthenticating(false);
-            }
-          }, 600);
-
-          return null;
-        } else {
-          // If popup is blocked by browser, navigate full window to Google auth URL
-          window.location.href = authData.authUrl;
-          return null;
+            return newUser;
+          } else {
+            throw new Error("Desktop login was cancelled or returned no session.");
+          }
         }
-      }
 
-      throw new Error("Unable to initialize Google sign-in. Please try again.");
-    } catch (err: any) {
-      console.error("[useAuth] Google authentication error:", err);
-      const isCancelled = err?.message?.toLowerCase().includes("cancel") || err?.message?.toLowerCase().includes("closed");
-      setAuthError(isCancelled ? "Google sign-in was cancelled." : err?.message || "Authentication failed. Please try again.");
-      authLockRef.current = false;
-      setIsAuthenticating(false);
-      return null;
-    }
-  }, [isAuthenticating, user]);
+        // 2. Web Application Path: Request OAuth Authorization URL
+        const authData = await apiClient.getGoogleAuthUrl();
+
+        if (authData && authData.authUrl && window && window.open) {
+          const width = 500;
+          const height = 600;
+          const left = window.screenX + (window.outerWidth - width) / 2;
+          const top = window.screenY + (window.outerHeight - height) / 2.5;
+
+          const popup = window.open(
+            authData.authUrl,
+            "NoteFlow Google Auth",
+            `width=${width},height=${height},left=${left},top=${top},status=no,resizable=yes`
+          );
+
+          if (popup) {
+            const pollTimer = window.setInterval(() => {
+              if (popup.closed) {
+                window.clearInterval(pollTimer);
+                authLockRef.current = false;
+                setIsAuthenticating(false);
+              }
+            }, 600);
+
+            return null;
+          } else {
+            window.location.href = authData.authUrl;
+            return null;
+          }
+        }
+
+        throw new Error("Unable to initialize Google sign-in. Please try again.");
+      } catch (err: any) {
+        console.error("[useAuth] Google authentication error:", err);
+        const isCancelled = err?.message?.toLowerCase().includes("cancel") || err?.message?.toLowerCase().includes("closed");
+        setAuthError(isCancelled ? "Google sign-in was cancelled." : err?.message || "Authentication failed. Please try again.");
+        authLockRef.current = false;
+        setIsAuthenticating(false);
+        return null;
+      }
+    },
+    [isAuthenticating]
+  );
 
   /**
    * Email Sign-In
@@ -288,6 +394,7 @@ export function useAuth() {
       email,
       name: name || email.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
       organization: email.split("@")[1] || "My Workspace",
+      profileCompleted: true,
       provider: "email",
     };
     setUser(newUser);
@@ -338,6 +445,9 @@ export function useAuth() {
       email: "alex.product@acme-corp.internal",
       name: "Alex Miller (Demo)",
       organization: "Acme Product Pod",
+      city: "San Francisco",
+      country: "United States",
+      profileCompleted: true,
       provider: "demo",
     };
     setUser(demoUser);
@@ -360,6 +470,7 @@ export function useAuth() {
     isAuthenticating,
     authError,
     setAuthError,
+    updateProfile,
     loginWithGoogle,
     loginWithEmail,
     logout,

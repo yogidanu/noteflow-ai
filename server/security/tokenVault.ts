@@ -2,6 +2,18 @@ import fs from "fs";
 import path from "path";
 import { encryptToken, decryptToken } from "./crypto.js";
 
+export interface NoteFlowUserProfile {
+  fullName: string;
+  email: string;
+  avatarUrl?: string;
+  city?: string;
+  country?: string;
+  organization?: string;
+  profileCompleted: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface StoredOAuthRecord {
   userId: string;
   googleSubjectId?: string;
@@ -11,6 +23,7 @@ export interface StoredOAuthRecord {
   firstName?: string;
   lastName?: string;
   avatarUrl?: string;
+  profile: NoteFlowUserProfile;
   encryptedAccessToken: string;
   encryptedRefreshToken?: string;
   expiresAt: number; // Unix timestamp in ms
@@ -28,6 +41,7 @@ export interface SafeUserSession {
   firstName?: string;
   lastName?: string;
   avatarUrl?: string;
+  profile: NoteFlowUserProfile;
   isConnected: boolean;
   expiresAt: number;
   scopes: string[];
@@ -59,7 +73,23 @@ class TokenVault {
       const raw = fs.readFileSync(this.persistenceFilePath, "utf8");
       const records: StoredOAuthRecord[] = JSON.parse(raw);
       this.vault.clear();
-      records.forEach((r) => this.vault.set(r.userId, r));
+      records.forEach((r) => {
+        // Ensure backward compatibility if profile field is missing
+        if (!r.profile) {
+          r.profile = {
+            fullName: r.displayName || r.name,
+            email: r.email,
+            avatarUrl: r.avatarUrl,
+            city: "",
+            country: "",
+            organization: r.email.includes("@") ? r.email.split("@")[1] : "Workspace",
+            profileCompleted: false,
+            createdAt: new Date(r.createdAt || Date.now()).toISOString(),
+            updatedAt: new Date(r.lastUsedAt || Date.now()).toISOString(),
+          };
+        }
+        this.vault.set(r.userId, r);
+      });
     } catch (e) {
       console.warn("[TokenVault] Could not load persisted vault from disk:", e);
     }
@@ -93,21 +123,43 @@ class TokenVault {
     scopes: string[];
   }): void {
     const expiresAt = Date.now() + params.expiresInSeconds * 1000;
+    const existing = this.vault.get(params.userId);
+
+    // If profile already exists and was completed, preserve the custom user profile
+    const profile: NoteFlowUserProfile = existing?.profile
+      ? {
+          ...existing.profile,
+          email: params.email,
+          avatarUrl: existing.profile.avatarUrl || params.avatarUrl,
+          updatedAt: new Date().toISOString(),
+        }
+      : {
+          fullName: params.displayName || params.name,
+          email: params.email,
+          avatarUrl: params.avatarUrl,
+          city: "",
+          country: "",
+          organization: params.email.includes("@") ? params.email.split("@")[1] : "Workspace",
+          profileCompleted: false,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
 
     const record: StoredOAuthRecord = {
       userId: params.userId,
-      googleSubjectId: params.googleSubjectId,
+      googleSubjectId: params.googleSubjectId || existing?.googleSubjectId,
       email: params.email,
-      name: params.name,
-      displayName: params.displayName || params.name,
+      name: profile.fullName || params.name,
+      displayName: profile.fullName || params.displayName || params.name,
       firstName: params.firstName,
       lastName: params.lastName,
-      avatarUrl: params.avatarUrl,
+      avatarUrl: profile.avatarUrl || params.avatarUrl,
+      profile,
       encryptedAccessToken: encryptToken(params.accessToken),
-      encryptedRefreshToken: params.refreshToken ? encryptToken(params.refreshToken) : undefined,
+      encryptedRefreshToken: params.refreshToken ? encryptToken(params.refreshToken) : existing?.encryptedRefreshToken,
       expiresAt,
       scopes: params.scopes,
-      createdAt: Date.now(),
+      createdAt: existing?.createdAt || Date.now(),
       lastUsedAt: Date.now(),
     };
 
@@ -166,16 +218,62 @@ class TokenVault {
       userId: record.userId,
       googleSubjectId: record.googleSubjectId,
       email: record.email,
-      name: record.name,
-      displayName: record.displayName || record.name,
+      name: record.profile?.fullName || record.name,
+      displayName: record.profile?.fullName || record.displayName || record.name,
       firstName: record.firstName,
       lastName: record.lastName,
-      avatarUrl: record.avatarUrl,
+      avatarUrl: record.profile?.avatarUrl || record.avatarUrl,
+      profile: record.profile,
       isConnected: true,
       expiresAt: record.expiresAt,
       scopes: record.scopes,
       lastSyncedAt: new Date(record.lastUsedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     };
+  }
+
+  /**
+   * Retrieves NoteFlow user profile.
+   */
+  public getProfile(userId: string): NoteFlowUserProfile | null {
+    const record = this.vault.get(userId);
+    if (!record) return null;
+    return record.profile;
+  }
+
+  /**
+   * Updates NoteFlow user profile and marks profileCompleted = true.
+   */
+  public updateProfile(
+    userId: string,
+    updates: Partial<{ fullName: string; city: string; country: string; avatarUrl: string; organization: string }>
+  ): NoteFlowUserProfile | null {
+    const record = this.vault.get(userId);
+    if (!record) return null;
+
+    const current = record.profile;
+    const updatedProfile: NoteFlowUserProfile = {
+      ...current,
+      fullName: updates.fullName !== undefined ? updates.fullName.trim() : current.fullName,
+      city: updates.city !== undefined ? updates.city.trim() : current.city,
+      country: updates.country !== undefined ? updates.country.trim() : current.country,
+      avatarUrl: updates.avatarUrl !== undefined ? updates.avatarUrl.trim() : current.avatarUrl,
+      organization: updates.organization !== undefined ? updates.organization.trim() : current.organization,
+      profileCompleted: true,
+      updatedAt: new Date().toISOString(),
+    };
+
+    record.profile = updatedProfile;
+    record.displayName = updatedProfile.fullName;
+    record.name = updatedProfile.fullName;
+    if (updatedProfile.avatarUrl) {
+      record.avatarUrl = updatedProfile.avatarUrl;
+    }
+    record.lastUsedAt = Date.now();
+
+    this.vault.set(userId, record);
+    this.persistToDisk();
+
+    return updatedProfile;
   }
 
   /**

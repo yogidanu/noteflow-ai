@@ -162,6 +162,88 @@ export class MeetRecordApiClient {
   }
 
   /**
+   * Fetches NoteFlow user profile from the backend.
+   */
+  public async getUserProfile(userId?: string): Promise<{
+    fullName: string;
+    email: string;
+    avatarUrl?: string;
+    city?: string;
+    country?: string;
+    organization?: string;
+    profileCompleted: boolean;
+    createdAt?: string;
+    updatedAt?: string;
+  } | null> {
+    try {
+      const available = await this.checkAvailability();
+      if (!available) return null;
+
+      const headers = this.getAuthHeaders(userId ? { "x-user-id": userId } : {});
+      const res = await fetch(getApiEndpoint("/auth/profile"), { headers });
+      if (!res.ok) return null;
+
+      const json = await res.json();
+      if (json.success && json.profile) {
+        return json.profile;
+      }
+    } catch (e) {
+      console.warn("[ApiClient] Profile lookup error", e);
+    }
+    return null;
+  }
+
+  /**
+   * Updates NoteFlow user profile on the backend and sets profileCompleted = true.
+   */
+  public async updateUserProfile(
+    updates: {
+      fullName?: string;
+      city?: string;
+      country?: string;
+      avatarUrl?: string;
+      organization?: string;
+    },
+    userId?: string
+  ): Promise<{
+    fullName: string;
+    email: string;
+    avatarUrl?: string;
+    city?: string;
+    country?: string;
+    organization?: string;
+    profileCompleted: boolean;
+    createdAt?: string;
+    updatedAt?: string;
+  } | null> {
+    try {
+      const available = await this.checkAvailability();
+      if (!available) return null;
+
+      const headers = this.getAuthHeaders(
+        userId ? { "x-user-id": userId, "Content-Type": "application/json" } : { "Content-Type": "application/json" }
+      );
+      const res = await fetch(getApiEndpoint("/auth/profile"), {
+        method: "PUT",
+        headers,
+        body: JSON.stringify(updates),
+      });
+      if (!res.ok) return null;
+
+      const json = await res.json();
+      if (json.success && json.profile) {
+        if (json.profile.fullName) {
+          this.currentUserName = json.profile.fullName;
+        }
+        return json.profile;
+      }
+    } catch (e) {
+      console.error("[ApiClient] Update profile error", e);
+    }
+    return null;
+  }
+
+  /**
    * Logs out user session on the backend.
    */
   public async logout(userId?: string): Promise<boolean> {

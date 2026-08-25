@@ -6,6 +6,7 @@ import { useMeetRecord } from "./hooks/useMeetRecord";
 import { useTheme } from "./hooks/useTheme";
 import { AuthWelcomeScreen } from "./components/auth/AuthWelcomeScreen";
 import { DesktopLoginScreen } from "./components/auth/DesktopLoginScreen";
+import { ProfileSetupScreen } from "./components/auth/ProfileSetupScreen";
 import { CalendarSetupScreen } from "./components/auth/CalendarSetupScreen";
 import { MeetingDetectionSetupScreen } from "./components/auth/MeetingDetectionSetupScreen";
 import { OnboardingCompleteScreen } from "./components/auth/OnboardingCompleteScreen";
@@ -15,6 +16,7 @@ import { WorkspaceCanvas } from "./components/workspace/WorkspaceCanvas";
 import { ConfirmDeleteModal } from "./components/modals/ConfirmDeleteModal";
 import { OAuthConsentModal } from "./components/modals/OAuthConsentModal";
 import { MeetingDetectionSetupModal } from "./components/modals/MeetingDetectionSetupModal";
+import { UserProfileModal } from "./components/modals/UserProfileModal";
 import { RecordConfirmModal } from "./components/modals/RecordConfirmModal";
 import { StopConfirmModal } from "./components/modals/StopConfirmModal";
 import { LiveRecordingWidget } from "./components/workspace/meet/LiveRecordingWidget";
@@ -35,6 +37,7 @@ export function App() {
     isAuthenticating,
     authError,
     setAuthError,
+    updateProfile,
     loginWithGoogle,
     loginWithEmail,
     logout,
@@ -101,6 +104,7 @@ export function App() {
   const [meetingToDelete, setMeetingToDelete] = useState<MeetingNote | null>(null);
   const [isOAuthModalOpen, setIsOAuthModalOpen] = useState(false);
   const [isDetectionModalOpen, setIsDetectionModalOpen] = useState(false);
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [confirmRecordMeeting, setConfirmRecordMeeting] = useState<DetectedMeeting | null>(null);
   const [isStopConfirmOpen, setIsStopConfirmOpen] = useState(false);
   const [activeToast, setActiveToast] = useState<ToastNotificationPayload | null>(null);
@@ -304,7 +308,27 @@ export function App() {
     );
   }
 
-  // ROUTE 2: IF authenticated AND calendar not connected (onboarding incomplete) → Calendar Setup Step
+  // ROUTE 2: IF authenticated AND NoteFlow profile not completed → Profile Setup Screen
+  if (user && !isDemoMode && user.profileCompleted === false) {
+    return (
+      <ProfileSetupScreen
+        user={user}
+        onSaveProfile={async (data) => {
+          await updateProfile(data);
+          setActiveToast({
+            id: `toast-${Date.now()}`,
+            type: "success",
+            title: "Profile Configured",
+            message: `✨ Welcome, ${data.fullName}! Your NoteFlow workspace is personalized.`,
+            timestamp: Date.now(),
+          });
+        }}
+        onLogout={logout}
+      />
+    );
+  }
+
+  // ROUTE 3: IF authenticated AND calendar not connected (onboarding incomplete) → Calendar Setup Step
   if (user && !isDemoMode && !isOnboardingComplete && !calendarState.isConnected && !skippedCalendar) {
     return (
       <CalendarSetupScreen
@@ -320,7 +344,7 @@ export function App() {
     );
   }
 
-  // ROUTE 3: IF calendar connected AND meeting detection disabled (onboarding incomplete) → Meeting Detection Setup Step
+  // ROUTE 4: IF calendar connected AND meeting detection disabled (onboarding incomplete) → Meeting Detection Setup Step
   if (user && !isDemoMode && !isOnboardingComplete && !isDetectionEnabled && !skippedDetection) {
     return (
       <MeetingDetectionSetupScreen
@@ -338,7 +362,7 @@ export function App() {
     );
   }
 
-  // ROUTE 4: IF onboarding incomplete (all prerequisites completed or acknowledged) → Onboarding Completion Screen
+  // ROUTE 5: IF onboarding incomplete (all prerequisites completed or acknowledged) → Onboarding Completion Screen
   if (user && !isDemoMode && !isOnboardingComplete) {
     return (
       <OnboardingCompleteScreen
@@ -352,7 +376,7 @@ export function App() {
     );
   }
 
-  // ROUTE 5: IF onboarding complete OR returning authenticated user OR demo mode → Full Dashboard Shell
+  // ROUTE 6: IF onboarding complete OR returning authenticated user OR demo mode → Full Dashboard Shell
   return (
     <div className="flex flex-col h-screen w-screen bg-[var(--bg-canvas)] text-[var(--text-primary)] overflow-hidden select-none font-sans transition-colors duration-150">
       {/* Top Application Header */}
@@ -363,6 +387,7 @@ export function App() {
         isRecordingActive={!!activeRecordingMeetingId}
         onOpenOAuthModal={() => setIsOAuthModalOpen(true)}
         onOpenDetectionModal={() => setIsDetectionModalOpen(true)}
+        onOpenProfileModal={() => setIsProfileModalOpen(true)}
         isDetectionEnabled={isDetectionEnabled}
         onResetSamples={resetToSamples}
         currentView={viewMode}
@@ -473,6 +498,27 @@ export function App() {
             }
           }
         }}
+      />
+
+      {/* NoteFlow User Profile & Connected Services Modal */}
+      <UserProfileModal
+        isOpen={isProfileModalOpen}
+        onClose={() => setIsProfileModalOpen(false)}
+        user={user}
+        calendarState={calendarState}
+        onUpdateProfile={async (data) => {
+          await updateProfile(data);
+          setActiveToast({
+            id: `toast-${Date.now()}`,
+            type: "success",
+            title: "Profile Saved",
+            message: "Your profile changes were saved successfully.",
+            timestamp: Date.now(),
+          });
+        }}
+        onOpenCalendarModal={() => setIsOAuthModalOpen(true)}
+        onDisconnectCalendar={disconnectCalendar}
+        onLogout={logout}
       />
 
       {/* Google Calendar OAuth Consent & Management Modal */}
