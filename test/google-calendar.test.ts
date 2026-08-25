@@ -71,24 +71,34 @@ async function runCalendarTests() {
   }
 
   // -------------------------------------------------------------
-  // Test 2: Minimal Required Scope (Read-Only)
+  // Test 2: Minimal Required Scope (Read-Only) & Incremental Scope Separation
   // -------------------------------------------------------------
   try {
-    const requiredScope = "https://www.googleapis.com/auth/calendar.events.readonly";
-    const hasWriteAccess = config.google.scopes.some((s) => s.includes("calendar.events.freebusy") || s === "https://www.googleapis.com/auth/calendar");
+    const requiredReadOnlyScope = "https://www.googleapis.com/auth/calendar.events.readonly";
 
-    if (config.google.scopes.includes(requiredScope) && !hasWriteAccess) {
+    // 1. Verify calendar scope contains ONLY read-only access (zero write permissions)
+    const hasWriteAccess = config.google.allScopes.some(
+      (s) => s.includes("calendar.events.freebusy") || s === "https://www.googleapis.com/auth/calendar" || s.endsWith("calendar.events")
+    );
+
+    // 2. Verify initial login scopes do NOT over-privilege with calendar access
+    const loginHasCalendar = config.google.authScopes.some((s) => s.includes("calendar"));
+
+    // 3. Verify calendar scopes strictly specify read-only
+    const hasReadOnlyScope = config.google.calendarScopes.includes(requiredReadOnlyScope);
+
+    if (hasReadOnlyScope && !hasWriteAccess && !loginHasCalendar) {
       results.push({
         id: 2,
         testCase: "Minimal Read-Only Permission Scope Enforcement",
-        expectedResult: "Only calendar.events.readonly is configured in Google OAuth scopes; zero write scopes.",
-        actualResult: `Configured scopes strictly limited to: ${config.google.scopes.join(", ")}`,
+        expectedResult: "Strict read-only calendar.events.readonly; zero write scopes; calendar separated from initial login.",
+        actualResult: `Calendar scope strictly limited to: ${config.google.calendarScopes.join(", ")}; Initial login scopes: ${config.google.authScopes.join(", ")}`,
         status: "PASS",
         severity: "CRITICAL",
-        evidence: `Verified zero write/delete permissions in server/config.ts.`,
+        evidence: `Verified zero write/delete permissions in server/config.ts. Incremental authorization active.`,
       });
     } else {
-      throw new Error("Found over-privileged calendar write scopes");
+      throw new Error(`Permission scope check failed: readOnly=${hasReadOnlyScope}, writeAccess=${hasWriteAccess}, loginHasCal=${loginHasCalendar}`);
     }
   } catch (err: any) {
     results.push({
@@ -103,10 +113,10 @@ async function runCalendarTests() {
   }
 
   // -------------------------------------------------------------
-  // Test 3: Connect Calendar Success & Delta Query
+  // Test 3: Explicit Incremental Calendar Connection & Delta Query
   // -------------------------------------------------------------
   try {
-    // Authorize calendar scope
+    // Authorize explicit incremental calendar scope
     tokenVault.saveTokens({
       userId: testUserId,
       email: testUserEmail,
@@ -114,7 +124,7 @@ async function runCalendarTests() {
       accessToken: "ya29.authorized_calendar_token",
       refreshToken: "1//refresh_token_valid_99",
       expiresInSeconds: 3600,
-      scopes: config.google.scopes,
+      scopes: config.google.allScopes,
     });
 
     const result = await calendarService.fetchUpcomingEvents(testUserId);
@@ -123,7 +133,7 @@ async function runCalendarTests() {
       results.push({
         id: 3,
         testCase: "Google Calendar Connection & Event Resolution",
-        expectedResult: "Returns standardized event list and valid nextSyncToken for connected user.",
+        expectedResult: "Returns standardized event list and valid nextSyncToken for user after explicit calendar opt-in.",
         actualResult: `Successfully connected ${result.accountEmail}; syncToken generated (${result.nextSyncToken}).`,
         status: "PASS",
         severity: "CRITICAL",
