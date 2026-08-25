@@ -136,4 +136,5 @@ const handleGracefulShutdown = (signal: string) => {
 process.on("SIGTERM", () => handleGracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => handleGracefulShutdown("SIGINT"));
 
+export { app };
 export default app;
