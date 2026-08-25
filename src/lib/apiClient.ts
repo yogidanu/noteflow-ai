@@ -25,13 +25,16 @@ export class MeetRecordApiClient {
   /**
    * Fetches official Google OAuth authorization URL from backend.
    */
-  public async getGoogleAuthUrl(redirectUri?: string): Promise<{ authUrl: string; state: string } | null> {
+  public async getGoogleAuthUrl(redirectUri?: string, scope?: "auth" | "calendar" | "all"): Promise<{ authUrl: string; state: string } | null> {
     try {
       const available = await this.checkAvailability();
       if (!available) return null;
 
       const endpoint = getApiEndpoint("/auth/google/url");
-      const url = redirectUri ? `${endpoint}?redirectUri=${encodeURIComponent(redirectUri)}` : endpoint;
+      const queryParams = new URLSearchParams();
+      if (redirectUri) queryParams.set("redirectUri", redirectUri);
+      if (scope) queryParams.set("scope", scope);
+      const url = queryParams.toString() ? `${endpoint}?${queryParams.toString()}` : endpoint;
       const res = await fetch(url);
       if (!res.ok) return null;
 

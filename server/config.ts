@@ -78,10 +78,28 @@ export const config = {
     clientId: process.env.GOOGLE_CLIENT_ID || "noteflow-google-client-id-sample.apps.googleusercontent.com",
     clientSecret: process.env.GOOGLE_CLIENT_SECRET || "GOCSPX-sample-client-secret-key",
     redirectUri: googleRedirectUri,
-    scopes: [
-      "https://www.googleapis.com/auth/calendar.events.readonly",
+    // OpenID Connect Authentication Scopes (Basic Non-Sensitive Identity)
+    authScopes: [
+      "openid",
       "https://www.googleapis.com/auth/userinfo.email",
       "https://www.googleapis.com/auth/userinfo.profile",
+    ],
+    // Incremental Google Calendar Scope (Sensitive Permission)
+    calendarScopes: [
+      "https://www.googleapis.com/auth/calendar.events.readonly",
+    ],
+    // Default initial sign-in scopes (Basic Identity via OpenID Connect)
+    scopes: [
+      "openid",
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/userinfo.profile",
+    ],
+    // Full combined scopes for calendar authorization
+    allScopes: [
+      "openid",
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/userinfo.profile",
+      "https://www.googleapis.com/auth/calendar.events.readonly",
     ],
   },
 

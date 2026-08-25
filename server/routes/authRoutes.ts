@@ -64,6 +64,14 @@ authRouter.get("/google/url", (req: Request, res: Response) => {
     });
   }
 
+  const requestedScopeParam = req.query.scope as string | undefined;
+  const isCalendarScopeRequested = requestedScopeParam === "calendar" || requestedScopeParam === "all";
+
+  // Select active scopes: default to standard OpenID Connect identity scopes for login
+  const activeScopes = isCalendarScopeRequested
+    ? config.google.allScopes
+    : config.google.authScopes;
+
   // Generate cryptographically signed state persisted to memory & disk
   const state = oauthStateStore.generateState({
     redirectUri: requestedRedirectUri,
@@ -73,15 +81,20 @@ authRouter.get("/google/url", (req: Request, res: Response) => {
   });
 
   const rootUrl = "https://accounts.google.com/o/oauth2/v2/auth";
-  const options = {
+  const options: Record<string, string> = {
     redirect_uri: requestedRedirectUri,
     client_id: config.google.clientId,
     access_type: "offline",
     response_type: "code",
     prompt: "consent",
     state,
-    scope: config.google.scopes.join(" "),
+    scope: activeScopes.join(" "),
   };
+
+  // Google Incremental Authorization: Include previously granted permissions when expanding scopes
+  if (isCalendarScopeRequested) {
+    options.include_granted_scopes = "true";
+  }
 
   const qs = new URLSearchParams(options);
   const authUrl = `${rootUrl}?${qs.toString()}`;
@@ -91,7 +104,7 @@ authRouter.get("/google/url", (req: Request, res: Response) => {
     authUrl,
     state,
     clientId: config.google.clientId,
-    scopes: config.google.scopes,
+    scopes: activeScopes,
   });
 });
 
