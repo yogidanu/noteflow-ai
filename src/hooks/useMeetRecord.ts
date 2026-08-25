@@ -3,6 +3,7 @@ import {
   DetectedMeeting,
   CalendarConnectionState,
   RecordingStatusType,
+  RecordingLifecycleState,
   MeetRecordErrorType,
 } from "../types/meeting";
 import { SAMPLE_1ON1_REORG_TRANSCRIPT, SAMPLE_ZOOM_TRANSCRIPT } from "../lib/sampleData";
@@ -146,6 +147,7 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
 
   // Active Live Recording Session States
   const [activeRecordingMeetingId, setActiveRecordingMeetingId] = useState<string | null>(null);
+  const [recordingLifecycleState, setRecordingLifecycleState] = useState<RecordingLifecycleState>("IDLE");
   const [recordingSeconds, setRecordingSeconds] = useState<number>(0);
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [audioPowerLevel, setAudioPowerLevel] = useState<number>(0);
@@ -452,6 +454,7 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
   // 7. Start Live Recording Ingress
   const startLiveRecording = useCallback(
     async (id: string) => {
+      setRecordingLifecycleState("STARTING");
       setActiveRecordingMeetingId(id);
       setRecordingSeconds(0);
       setIsPaused(false);
@@ -474,15 +477,23 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
       }
 
       // Start Web Audio Capture with live RMS equalizer and real-time chunk streaming
-      await webAudioRecorder.start({
-        onPowerLevel: (level) => setAudioPowerLevel(level),
-        onDuration: (sec) => setRecordingSeconds(sec),
-        onChunk: (chunk) => {
-          if (target?.dedupHash && !isDemoMode) {
-            apiClient.sendAudioChunk(target.dedupHash, chunk);
-          }
-        },
-      });
+      try {
+        await webAudioRecorder.start({
+          onPowerLevel: (level) => setAudioPowerLevel(level),
+          onDuration: (sec) => setRecordingSeconds(sec),
+          onChunk: (chunk) => {
+            if (target?.dedupHash && !isDemoMode) {
+              apiClient.sendAudioChunk(target.dedupHash, chunk);
+            }
+          },
+        });
+        setRecordingLifecycleState("RECORDING");
+      } catch (audioErr) {
+        console.error("[useMeetRecord] Audio recording startup error:", audioErr);
+        setRecordingLifecycleState("ERROR");
+        setCalendarError("Microphone permission denied or audio device unavailable.");
+        return;
+      }
 
       if (target?.dedupHash) {
         apiClient.startLiveRecording(target.dedupHash, target.meetingUrl);
@@ -497,8 +508,10 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
       const next = !prev;
       if (next) {
         webAudioRecorder.pause();
+        setRecordingLifecycleState("PAUSED");
       } else {
         webAudioRecorder.resume();
+        setRecordingLifecycleState("RECORDING");
       }
       return next;
     });
@@ -508,6 +521,7 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
   const stopRecording = useCallback(
     async (id: string, onComplete?: (meeting: DetectedMeeting, transcript: string) => void) => {
       const target = detectedMeetings.find((m) => m.id === id);
+      setRecordingLifecycleState("STOPPING");
       setActiveRecordingMeetingId(null);
       setRecordingSeconds(0);
       setIsPaused(false);
@@ -518,6 +532,7 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
 
       if (target) {
         updateMeetingStatus(id, "transcribing");
+        setRecordingLifecycleState("PROCESSING");
 
         let resolvedTranscript = isDemoMode ? (target.sampleTranscriptPreset || SAMPLE_ZOOM_TRANSCRIPT) : (target.sampleTranscriptPreset || "");
 
@@ -549,12 +564,17 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
           }
         }
 
+        setRecordingLifecycleState("COMPLETED");
+
         setTimeout(() => {
           updateMeetingStatus(id, "completed");
           if (onComplete) {
             onComplete(target, resolvedTranscript);
           }
+          setRecordingLifecycleState("IDLE");
         }, 600);
+      } else {
+        setRecordingLifecycleState("IDLE");
       }
     },
     [detectedMeetings, isDemoMode, updateMeetingStatus]
@@ -578,23 +598,15 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
       ],
       platform: isMeet ? "google_meet" : "unsupported",
       meetingUrl: url.trim(),
-      recordingStatus: isMeet ? "recording" : "error",
-      errorReason: isMeet ? undefined : "UNSUPPORTED_PLATFORM",
-      dedupHash: `hash_${Date.now()}`,
+      recordingStatus: "off",
+      dedupHash: `adhoc_${Date.now()}`,
     };
 
     setDetectedMeetings((prev) => [newMeeting, ...prev]);
-
-    if (isMeet) {
-      setActiveRecordingMeetingId(newId);
-      setRecordingSeconds(0);
-      setIsPaused(false);
-    }
-
     return newMeeting;
   }, [calendarState.accountEmail]);
 
-  // 11. Retry Failed Meeting
+  // 11. Retry failed meeting
   const retryMeeting = useCallback((id: string) => {
     updateMeetingStatus(id, "scheduled");
   }, [updateMeetingStatus]);
@@ -614,6 +626,7 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
     calendarError,
     activeRecordingMeetingId,
     activeRecordingMeeting,
+    recordingLifecycleState,
     recordingSeconds,
     isPaused,
     audioPowerLevel,

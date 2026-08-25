@@ -60,6 +60,16 @@ export interface AIAnalysisResult {
 
 export type InputFormatType = "vtt" | "teams" | "meet" | "bullets" | "raw";
 
+export type RecordingLifecycleState =
+  | "IDLE"
+  | "STARTING"
+  | "RECORDING"
+  | "PAUSED"
+  | "STOPPING"
+  | "PROCESSING"
+  | "COMPLETED"
+  | "ERROR";
+
 export type RecordingStatusType =
   | "off"
   | "scheduled"

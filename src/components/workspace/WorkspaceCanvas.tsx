@@ -6,6 +6,7 @@ import {
   DetectedMeeting,
   AIAnalysisResult,
   SourceCitation,
+  RecordingLifecycleState,
 } from "../../types/meeting";
 import { MeetingToolbar } from "./MeetingToolbar";
 import { SourceDrawer } from "./input/SourceDrawer";
@@ -17,6 +18,7 @@ import { EmptyState } from "./EmptyState";
 import { ExportModal } from "../modals/ExportModal";
 import { GenerationStage } from "../../hooks/useAISummarizer";
 import { MeetRecordFeed } from "./meet/MeetRecordFeed";
+import { ActiveRecordingBanner } from "./meet/ActiveRecordingBanner";
 import { FileEdit, Sparkles } from "lucide-react";
 
 interface WorkspaceCanvasProps {
@@ -45,6 +47,14 @@ interface WorkspaceCanvasProps {
   onRetryMeeting: (id: string) => void;
   onOpenConfirmModal: (meeting: DetectedMeeting) => void;
   onSwitchToWorkspace: () => void;
+  // Active Recording Session Props
+  activeRecordingMeeting?: DetectedMeeting | null;
+  recordingLifecycleState?: RecordingLifecycleState;
+  recordingSeconds?: number;
+  isRecordingPaused?: boolean;
+  audioPowerLevel?: number;
+  onTogglePauseRecording?: () => void;
+  onStopRecording?: () => void;
 }
 
 export const WorkspaceCanvas: React.FC<WorkspaceCanvasProps> = ({
@@ -72,6 +82,13 @@ export const WorkspaceCanvas: React.FC<WorkspaceCanvasProps> = ({
   onRetryMeeting,
   onOpenConfirmModal,
   onSwitchToWorkspace,
+  activeRecordingMeeting,
+  recordingLifecycleState = "IDLE",
+  recordingSeconds = 0,
+  isRecordingPaused = false,
+  audioPowerLevel = 0,
+  onTogglePauseRecording,
+  onStopRecording,
 }) => {
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [isSourceDrawerOpen, setIsSourceDrawerOpen] = useState(false);
@@ -94,12 +111,29 @@ export const WorkspaceCanvas: React.FC<WorkspaceCanvasProps> = ({
     }
   };
 
+  const isRecordingActive =
+    Boolean(activeRecordingMeeting) &&
+    recordingLifecycleState !== "IDLE";
+
   return (
     <main className="flex-1 flex flex-col bg-[var(--bg-canvas)] overflow-hidden relative transition-colors duration-150">
       {/* 1. If in Meet Record Feed View */}
       {viewMode === "feed" ? (
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
-          <div className="max-w-4xl mx-auto">
+          <div className="max-w-4xl mx-auto space-y-6">
+            {/* Prominent Active Recording Companion Screen */}
+            {isRecordingActive && activeRecordingMeeting && (
+              <ActiveRecordingBanner
+                meeting={activeRecordingMeeting}
+                recordingState={recordingLifecycleState}
+                seconds={recordingSeconds}
+                isPaused={isRecordingPaused}
+                audioPowerLevel={audioPowerLevel}
+                onTogglePause={onTogglePauseRecording || (() => {})}
+                onStopAndSynthesize={onStopRecording || (() => {})}
+              />
+            )}
+
             <MeetRecordFeed
               calendarState={calendarState}
               detectedMeetings={detectedMeetings}
@@ -121,8 +155,22 @@ export const WorkspaceCanvas: React.FC<WorkspaceCanvasProps> = ({
         </div>
       ) : !activeMeeting ? (
         /* 2. Blank / Zero Meeting Empty State */
-        <div className="flex-1 flex flex-col bg-[var(--bg-canvas)] overflow-y-auto">
-          <EmptyState onLoadSample={onLoadSample} onStartBlank={onStartBlank} isDemoMode={isDemoMode} />
+        <div className="flex-1 flex flex-col bg-[var(--bg-canvas)] overflow-y-auto p-4 sm:p-6 lg:p-8">
+          <div className="max-w-4xl mx-auto w-full space-y-6">
+            {/* Active Recording Banner */}
+            {isRecordingActive && activeRecordingMeeting && (
+              <ActiveRecordingBanner
+                meeting={activeRecordingMeeting}
+                recordingState={recordingLifecycleState}
+                seconds={recordingSeconds}
+                isPaused={isRecordingPaused}
+                audioPowerLevel={audioPowerLevel}
+                onTogglePause={onTogglePauseRecording || (() => {})}
+                onStopAndSynthesize={onStopRecording || (() => {})}
+              />
+            )}
+            <EmptyState onLoadSample={onLoadSample} onStartBlank={onStartBlank} isDemoMode={isDemoMode} />
+          </div>
         </div>
       ) : (
         /* 3. Active Meeting Workspace Canvas (Loading, Summary, Error, Draft) */
@@ -138,6 +186,18 @@ export const WorkspaceCanvas: React.FC<WorkspaceCanvasProps> = ({
 
           <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
             <div className="max-w-4xl mx-auto space-y-6">
+              {/* Active Recording Banner inside workspace note */}
+              {isRecordingActive && activeRecordingMeeting && (
+                <ActiveRecordingBanner
+                  meeting={activeRecordingMeeting}
+                  recordingState={recordingLifecycleState}
+                  seconds={recordingSeconds}
+                  isPaused={isRecordingPaused}
+                  audioPowerLevel={audioPowerLevel}
+                  onTogglePause={onTogglePauseRecording || (() => {})}
+                  onStopAndSynthesize={onStopRecording || (() => {})}
+                />
+              )}
               {/* Grounded Source Drawer */}
               <SourceDrawer
                 isOpen={isSourceDrawerOpen}

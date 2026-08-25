@@ -80,6 +80,7 @@ export function App() {
     calendarError,
     activeRecordingMeetingId,
     activeRecordingMeeting,
+    recordingLifecycleState,
     recordingSeconds,
     isPaused,
     audioPowerLevel,
@@ -456,6 +457,13 @@ export function App() {
           onRetryMeeting={retryMeeting}
           onOpenConfirmModal={(m) => setConfirmRecordMeeting(m)}
           onSwitchToWorkspace={() => setViewMode("workspace")}
+          activeRecordingMeeting={activeRecordingMeeting}
+          recordingLifecycleState={recordingLifecycleState}
+          recordingSeconds={recordingSeconds}
+          isRecordingPaused={isPaused}
+          audioPowerLevel={audioPowerLevel}
+          onTogglePauseRecording={togglePauseRecording}
+          onStopRecording={() => setIsStopConfirmOpen(true)}
         />
       </div>
 
