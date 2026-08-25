@@ -39,7 +39,7 @@ export const DesktopLoginScreen: React.FC<DesktopLoginScreenProps> = ({ onSucces
 
     try {
       // 1. Request official Google OAuth authorization URL with CSRF state
-      const authData = await apiClient.getGoogleAuthUrl();
+      const authData = await apiClient.getGoogleAuthUrl(redirectUri, "auth", codeChallenge, codeChallengeMethod);
 
       if (authData && authData.authUrl) {
         // Open Google OAuth popup window

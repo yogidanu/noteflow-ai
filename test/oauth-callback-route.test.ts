@@ -1,6 +1,7 @@
 import { app } from "../server/index.js";
 import { config } from "../server/config.js";
 import { oauthStateStore } from "../server/security/stateStore.js";
+import { encryptToken } from "../server/security/crypto.js";
 import crypto from "crypto";
 import http from "http";
 
@@ -41,15 +42,15 @@ async function runRouteTests() {
 
     assert(
       "Fresh Google Login: /google/url generates signed state and Google authUrl",
-      urlRes.status === 200 && urlJson.success && Boolean(generatedState) && Boolean(urlJson.authUrl?.includes(generatedState)),
-      `State: ${generatedState}, Redirect URI: ${urlJson.authUrl?.substring(0, 50)}...`
+      urlRes.status === 200 && urlJson.success && Boolean(generatedState) && Boolean(urlJson.authUrl?.includes(encodeURIComponent(generatedState)) || urlJson.authUrl?.includes(generatedState)),
+      `State: ${generatedState.substring(0, 30)}..., Redirect URI: ${urlJson.authUrl?.substring(0, 50)}...`
     );
 
     // -------------------------------------------------------------
     // Test 2: Callback with Matching State (GET /api/auth/google/callback)
     // -------------------------------------------------------------
     const matchingCallbackRes = await fetch(
-      `${BASE_URL}/api/auth/google/callback?code=sample_google_auth_code_123&state=${generatedState}`,
+      `${BASE_URL}/api/auth/google/callback?code=sample_google_auth_code_123&state=${encodeURIComponent(generatedState)}`,
       { redirect: "manual" }
     );
     const redirectLocation = matchingCallbackRes.headers.get("location");
@@ -75,17 +76,17 @@ async function runRouteTests() {
     // -------------------------------------------------------------
     // Test 4: Callback with Expired State
     // -------------------------------------------------------------
-    // Inject artificially expired state (>10m ago) directly into store
-    const expiredState = oauthStateStore.generateState({
+    // Create an expired payload (>10m ago) encrypted with master secret
+    const expiredPayload = {
+      nonce: "expired_test_nonce_99",
       redirectUri: config.frontendUrl,
       flowType: "web",
-    });
-    const record = oauthStateStore.getState(expiredState);
-    if (record) {
-      record.createdAt = Date.now() - 11 * 60 * 1000; // 11 minutes old
-    }
+      createdAt: Date.now() - 11 * 60 * 1000, // 11 minutes old
+    };
+    const expiredEncrypted = encryptToken(JSON.stringify(expiredPayload));
+    const expiredState = Buffer.from(expiredEncrypted, "utf8").toString("base64url");
 
-    const expiredRes = await fetch(`${BASE_URL}/api/auth/google/callback?code=code_123&state=${expiredState}`);
+    const expiredRes = await fetch(`${BASE_URL}/api/auth/google/callback?code=code_123&state=${encodeURIComponent(expiredState)}`);
     const expiredJson = await expiredRes.json();
 
     assert(
