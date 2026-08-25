@@ -23,6 +23,7 @@ export class WebAudioRecorder {
   private isPaused = false;
   private onPowerLevelChange?: (level: number) => void;
   private onDurationChange?: (duration: number) => void;
+  private onChunkRecorded?: (chunk: Blob) => void;
 
   /**
    * Checks if browser supports audio capture
@@ -41,6 +42,7 @@ export class WebAudioRecorder {
   public async start(options?: {
     onPowerLevel?: (level: number) => void;
     onDuration?: (duration: number) => void;
+    onChunk?: (chunk: Blob) => void;
   }): Promise<boolean> {
     if (!WebAudioRecorder.isSupported()) {
       console.warn("[WebAudioRecorder] Audio recording is not supported in this environment");
@@ -49,6 +51,7 @@ export class WebAudioRecorder {
 
     this.onPowerLevelChange = options?.onPowerLevel;
     this.onDurationChange = options?.onDuration;
+    this.onChunkRecorded = options?.onChunk;
     this.audioChunks = [];
     this.durationSeconds = 0;
     this.isPaused = false;
@@ -93,6 +96,9 @@ export class WebAudioRecorder {
       this.mediaRecorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0) {
           this.audioChunks.push(event.data);
+          if (this.onChunkRecorded) {
+            this.onChunkRecorded(event.data);
+          }
         }
       };
 

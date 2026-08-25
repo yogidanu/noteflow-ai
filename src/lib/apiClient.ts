@@ -258,6 +258,114 @@ export class MeetRecordApiClient {
   }
 
   /**
+   * Initializes a persistent recording session on the backend.
+   */
+  public async initRecordingSession(params: {
+    meetingId: string;
+    title?: string;
+    meetingUrl?: string;
+    dedupHash?: string;
+  }): Promise<{ recordingSessionId: string; status: string } | null> {
+    try {
+      const available = await this.checkAvailability();
+      if (!available) return null;
+
+      const res = await fetch(getApiEndpoint("/recording/session/init"), {
+        method: "POST",
+        headers: this.getAuthHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(params),
+      });
+
+      if (!res.ok) return null;
+      const json = await res.json();
+      if (json.success && json.data) {
+        return {
+          recordingSessionId: json.data.recordingSessionId,
+          status: json.data.status,
+        };
+      }
+    } catch (e) {
+      console.warn("[ApiClient] Init recording session fallback", e);
+    }
+    return null;
+  }
+
+  /**
+   * Streams an audio binary chunk to the backend recording session.
+   */
+  public async sendAudioChunk(
+    sessionIdOrHash: string,
+    chunkBlob: Blob
+  ): Promise<{ chunkIndex: number; totalBytes: number } | null> {
+    try {
+      const available = await this.checkAvailability();
+      if (!available) return null;
+
+      const buffer = await chunkBlob.arrayBuffer();
+
+      const res = await fetch(`${getApiEndpoint("/recording/chunk")}?sessionId=${encodeURIComponent(sessionIdOrHash)}`, {
+        method: "POST",
+        headers: this.getAuthHeaders({ "Content-Type": "application/octet-stream" }),
+        body: buffer,
+      });
+
+      if (!res.ok) return null;
+      const json = await res.json();
+      if (json.success && json.data) {
+        return {
+          chunkIndex: json.data.chunkIndex,
+          totalBytes: json.data.totalBytes,
+        };
+      }
+    } catch (e) {
+      console.warn("[ApiClient] Send audio chunk error:", e);
+    }
+    return null;
+  }
+
+  /**
+   * Retrieves full recording session metadata.
+   */
+  public async getRecordingSession(sessionIdOrHash: string): Promise<any | null> {
+    try {
+      const available = await this.checkAvailability();
+      if (!available) return null;
+
+      const res = await fetch(`${getApiEndpoint("/recording/session")}/${encodeURIComponent(sessionIdOrHash)}`, {
+        headers: this.getAuthHeaders(),
+      });
+
+      if (!res.ok) return null;
+      const json = await res.json();
+      return json.data || json.session || null;
+    } catch (e) {
+      console.warn("[ApiClient] Get session error:", e);
+    }
+    return null;
+  }
+
+  /**
+   * Retrieves audio artifact metadata for verifiable proof of recording.
+   */
+  public async getAudioArtifactInfo(sessionId: string): Promise<any | null> {
+    try {
+      const available = await this.checkAvailability();
+      if (!available) return null;
+
+      const res = await fetch(`${getApiEndpoint("/recording/session")}/${encodeURIComponent(sessionId)}/artifact`, {
+        headers: this.getAuthHeaders(),
+      });
+
+      if (!res.ok) return null;
+      const json = await res.json();
+      return json.data || null;
+    } catch (e) {
+      console.warn("[ApiClient] Get audio artifact error:", e);
+    }
+    return null;
+  }
+
+  /**
    * Starts live recording session on backend.
    */
   public async startLiveRecording(dedupHash: string, meetingUrl?: string): Promise<boolean> {

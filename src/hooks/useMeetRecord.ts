@@ -376,18 +376,38 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
       setIsPaused(false);
       updateMeetingStatus(id, "recording");
 
-      // Start Web Audio Capture with live RMS equalizer
+      const target = detectedMeetings.find((m) => m.id === id);
+
+      // Initialize persistent recording session on backend
+      if (target?.dedupHash && !isDemoMode) {
+        try {
+          await apiClient.initRecordingSession({
+            meetingId: id,
+            title: target.title,
+            meetingUrl: target.meetingUrl,
+            dedupHash: target.dedupHash,
+          });
+        } catch (e) {
+          console.warn("[useMeetRecord] Session init fallback:", e);
+        }
+      }
+
+      // Start Web Audio Capture with live RMS equalizer and real-time chunk streaming
       await webAudioRecorder.start({
         onPowerLevel: (level) => setAudioPowerLevel(level),
         onDuration: (sec) => setRecordingSeconds(sec),
+        onChunk: (chunk) => {
+          if (target?.dedupHash && !isDemoMode) {
+            apiClient.sendAudioChunk(target.dedupHash, chunk);
+          }
+        },
       });
 
-      const target = detectedMeetings.find((m) => m.id === id);
       if (target?.dedupHash) {
         apiClient.startLiveRecording(target.dedupHash, target.meetingUrl);
       }
     },
-    [detectedMeetings, updateMeetingStatus]
+    [detectedMeetings, isDemoMode, updateMeetingStatus]
   );
 
   // 8. Pause / Resume Recording
@@ -412,7 +432,7 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
       setIsPaused(false);
       setAudioPowerLevel(0);
 
-      // Stop Audio Recording & compile audio blob
+      // Stop Audio Recording & compile final audio blob
       const audioBlob = await webAudioRecorder.stop();
 
       if (target) {
@@ -420,8 +440,20 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
 
         let resolvedTranscript = target.sampleTranscriptPreset || SAMPLE_ZOOM_TRANSCRIPT;
 
+        // Stop session and trigger synthesis on backend
+        if (target.dedupHash && !isDemoMode) {
+          try {
+            const stopRes = await apiClient.stopRecording(target.dedupHash);
+            if (stopRes && stopRes.transcript) {
+              resolvedTranscript = stopRes.transcript;
+            }
+          } catch (e) {
+            console.warn("[useMeetRecord] Backend stop recording fallback:", e);
+          }
+        }
+
         // If audio blob is captured in live mode, transcribe via backend STT service
-        if (audioBlob && !isDemoMode) {
+        if (audioBlob && !isDemoMode && !resolvedTranscript) {
           try {
             const sttResult = await apiClient.transcribeAudio({
               audioBlob,
@@ -441,7 +473,7 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
           if (onComplete) {
             onComplete(target, resolvedTranscript);
           }
-        }, 800);
+        }, 600);
       }
     },
     [detectedMeetings, isDemoMode, updateMeetingStatus]

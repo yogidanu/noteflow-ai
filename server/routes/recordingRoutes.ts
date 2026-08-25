@@ -1,11 +1,40 @@
 import { Router, Request, Response } from "express";
 import { ingressOrchestrator } from "../services/ingressOrchestrator.js";
+import { recordingSessionService } from "../services/recordingSessionService.js";
 import { sttService } from "../services/sttService.js";
 import { computeMeetingHash } from "../security/crypto.js";
 import { requireAuth } from "../middleware/authMiddleware.js";
 import { recordingRateLimiter } from "../middleware/rateLimiter.js";
+import fs from "fs";
 
 export const recordingRouter = Router();
+
+/**
+ * POST /api/recording/session/init
+ * Explicit lifecycle initiation (transitions to INITIALIZING).
+ */
+recordingRouter.post("/session/init", requireAuth, recordingRateLimiter, (req: Request, res: Response) => {
+  const { meetingId, title, meetingUrl, dedupHash } = req.body;
+  const userId = req.user?.userId || "user_default_workspace_id";
+
+  if (!meetingId && !meetingUrl) {
+    return res.status(400).json({ success: false, error: "MEETING_IDENTIFIER_REQUIRED" });
+  }
+
+  const session = recordingSessionService.createSession({
+    meetingId: meetingId || `meet-${Date.now()}`,
+    userId,
+    title,
+    meetingUrl,
+    dedupHash,
+  });
+
+  res.json({
+    success: true,
+    message: "Recording session initialized",
+    data: session,
+  });
+});
 
 /**
  * POST /api/recording/schedule
@@ -20,9 +49,17 @@ recordingRouter.post("/schedule", requireAuth, recordingRateLimiter, (req: Reque
   }
 
   const dedupHash = computeMeetingHash(meetingUrl);
-  const session = ingressOrchestrator.scheduleRecording({
+  const session = recordingSessionService.createSession({
     meetingId: meetingId || `meet-${Date.now()}`,
     title: title || "Scheduled Google Meet",
+    meetingUrl,
+    dedupHash,
+    userId,
+  });
+
+  ingressOrchestrator.scheduleRecording({
+    meetingId: session.meetingId,
+    title: session.title || "Scheduled Google Meet",
     meetingUrl,
     dedupHash,
     userId,
@@ -32,6 +69,7 @@ recordingRouter.post("/schedule", requireAuth, recordingRateLimiter, (req: Reque
     success: true,
     message: "Assistant scheduled for recording",
     session: {
+      recordingSessionId: session.recordingSessionId,
       meetingId: session.meetingId,
       status: session.status,
       dedupHash: session.dedupHash,
@@ -41,49 +79,103 @@ recordingRouter.post("/schedule", requireAuth, recordingRateLimiter, (req: Reque
 });
 
 /**
- * POST /api/recording/start
- * Starts live recording session immediately for the authenticated user.
+ * POST /api/recording/start or POST /api/recording/session/:id/start
+ * Transitions recording session to RECORDING.
  */
-recordingRouter.post("/start", requireAuth, recordingRateLimiter, (req: Request, res: Response) => {
-  const { meetingUrl, dedupHash } = req.body;
+const handleStartRecording = (req: Request, res: Response) => {
+  const targetId = req.params.id || req.body.recordingSessionId || req.body.dedupHash || (req.body.meetingUrl ? computeMeetingHash(req.body.meetingUrl) : undefined);
   const userId = req.user?.userId || "user_default_workspace_id";
-  const hash = dedupHash || (meetingUrl ? computeMeetingHash(meetingUrl) : `hash_${Date.now()}`);
 
-  const session = ingressOrchestrator.startRecording(hash);
-  session.userIds.add(userId);
+  let session = targetId ? recordingSessionService.resolveSession(targetId) : null;
+  if (!session) {
+    session = recordingSessionService.createSession({
+      meetingId: req.body.meetingId || `meet-${Date.now()}`,
+      userId,
+      title: req.body.title || "Live Meeting Session",
+      meetingUrl: req.body.meetingUrl,
+      dedupHash: targetId,
+    });
+  }
+
+  const started = recordingSessionService.startRecording(session.recordingSessionId, userId);
+  ingressOrchestrator.startRecording(started.dedupHash);
 
   res.json({
     success: true,
     message: "Live recording started",
-    session: {
-      meetingId: session.meetingId,
-      status: session.status,
-      dedupHash: session.dedupHash,
-      durationSeconds: session.durationSeconds,
-      audioPowerLevel: session.audioPowerLevel,
-    },
+    session: started,
+    data: started,
   });
-});
+};
+
+recordingRouter.post("/start", requireAuth, recordingRateLimiter, handleStartRecording);
+recordingRouter.post("/session/:id/start", requireAuth, recordingRateLimiter, handleStartRecording);
 
 /**
- * POST /api/recording/pause
- * Toggles pause/resume with IDOR tenant authorization verification.
+ * POST /api/recording/chunk or POST /api/recording/session/:id/chunk
+ * Ingests live audio binary/base64 chunk and updates audio tracking telemetry.
  */
-recordingRouter.post("/pause", requireAuth, (req: Request, res: Response) => {
-  const { dedupHash } = req.body;
+const handleAudioChunk = (req: Request, res: Response) => {
+  const sessionId = req.params.id || req.body.recordingSessionId || req.body.dedupHash || req.query.sessionId as string;
   const userId = req.user?.userId || "user_default_workspace_id";
 
-  if (!dedupHash) {
-    return res.status(400).json({ success: false, error: "DEDUP_HASH_REQUIRED" });
+  if (!sessionId) {
+    return res.status(400).json({ success: false, error: "SESSION_ID_REQUIRED" });
   }
 
-  const existingSession = ingressOrchestrator.getSession(dedupHash);
+  let chunkBuffer: Buffer | undefined;
+
+  if (Buffer.isBuffer(req.body) && req.body.length > 0) {
+    chunkBuffer = req.body;
+  } else if (req.body?.audioBase64) {
+    chunkBuffer = Buffer.from(req.body.audioBase64, "base64");
+  }
+
+  if (!chunkBuffer || chunkBuffer.length === 0) {
+    return res.status(400).json({ success: false, error: "AUDIO_CHUNK_EMPTY" });
+  }
+
+  try {
+    const result = recordingSessionService.appendAudioChunk(sessionId, chunkBuffer, userId);
+    res.json({
+      success: true,
+      message: "Audio chunk ingested",
+      data: {
+        recordingSessionId: result.session.recordingSessionId,
+        chunkIndex: result.chunkIndex,
+        chunkBytes: result.chunkBytes,
+        totalBytes: result.session.audioBytes,
+        audioChunkCount: result.session.audioChunkCount,
+        durationSeconds: result.session.durationSeconds,
+      },
+    });
+  } catch (err: any) {
+    res.status(404).json({ success: false, error: err.message || "SESSION_NOT_FOUND" });
+  }
+};
+
+recordingRouter.post("/chunk", requireAuth, handleAudioChunk);
+recordingRouter.post("/session/:id/chunk", requireAuth, handleAudioChunk);
+
+/**
+ * POST /api/recording/pause or POST /api/recording/session/:id/pause
+ * Toggles pause/resume with IDOR tenant authorization verification.
+ */
+const handlePauseRecording = (req: Request, res: Response) => {
+  const targetId = req.params.id || req.body.recordingSessionId || req.body.dedupHash;
+  const userId = req.user?.userId || "user_default_workspace_id";
+
+  if (!targetId) {
+    return res.status(400).json({ success: false, error: "TARGET_ID_REQUIRED" });
+  }
+
+  const existingSession = recordingSessionService.resolveSession(targetId);
   if (!existingSession) {
     return res.status(404).json({ success: false, error: "SESSION_NOT_FOUND" });
   }
 
   // IDOR Guard: Verify calling user has access to this session
-  if (!existingSession.userIds.has(userId) && req.user?.role !== "admin") {
+  if (!existingSession.userIds.includes(userId) && req.user?.role !== "admin") {
     return res.status(403).json({
       success: false,
       error: "FORBIDDEN_NOT_SESSION_PARTICIPANT",
@@ -91,34 +183,39 @@ recordingRouter.post("/pause", requireAuth, (req: Request, res: Response) => {
     });
   }
 
-  const session = ingressOrchestrator.togglePause(dedupHash);
+  const session = recordingSessionService.togglePause(existingSession.recordingSessionId);
+  ingressOrchestrator.togglePause(session.dedupHash);
 
   res.json({
     success: true,
-    isPaused: session!.isPaused,
-    status: session!.status,
+    isPaused: session.isPaused,
+    status: session.status,
+    session,
   });
-});
+};
+
+recordingRouter.post("/pause", requireAuth, handlePauseRecording);
+recordingRouter.post("/session/:id/pause", requireAuth, handlePauseRecording);
 
 /**
- * POST /api/recording/stop
- * Terminates recording with IDOR tenant authorization verification.
+ * POST /api/recording/stop or POST /api/recording/session/:id/stop
+ * Transitions session to STOPPING and triggers finalization and synthesis (COMPLETED).
  */
-recordingRouter.post("/stop", requireAuth, async (req: Request, res: Response) => {
-  const { dedupHash } = req.body;
+const handleStopRecording = async (req: Request, res: Response) => {
+  const targetId = req.params.id || req.body.recordingSessionId || req.body.dedupHash;
   const userId = req.user?.userId || "user_default_workspace_id";
 
-  if (!dedupHash) {
-    return res.status(400).json({ success: false, error: "DEDUP_HASH_REQUIRED" });
+  if (!targetId) {
+    return res.status(400).json({ success: false, error: "TARGET_ID_REQUIRED" });
   }
 
-  const existingSession = ingressOrchestrator.getSession(dedupHash);
+  const existingSession = recordingSessionService.resolveSession(targetId);
   if (!existingSession) {
     return res.status(404).json({ success: false, error: "SESSION_NOT_FOUND" });
   }
 
   // IDOR Guard: Verify calling user has access to this session
-  if (!existingSession.userIds.has(userId) && req.user?.role !== "admin") {
+  if (!existingSession.userIds.includes(userId) && req.user?.role !== "admin") {
     return res.status(403).json({
       success: false,
       error: "FORBIDDEN_NOT_SESSION_PARTICIPANT",
@@ -127,26 +224,48 @@ recordingRouter.post("/stop", requireAuth, async (req: Request, res: Response) =
   }
 
   try {
-    const result = await ingressOrchestrator.stopAndSynthesize(dedupHash);
+    // 1. Mark STOPPING
+    recordingSessionService.stopRecording(existingSession.recordingSessionId, userId);
+
+    // 2. Synthesize transcript and summary
+    const ingressResult = await ingressOrchestrator.stopAndSynthesize(existingSession.dedupHash);
+
+    // 3. Mark COMPLETED
+    const completedSession = recordingSessionService.completeSession(existingSession.recordingSessionId, {
+      transcript: ingressResult.transcript,
+      summary: ingressResult.summary,
+    });
 
     res.json({
       success: true,
       message: "Recording completed and synthesized",
       data: {
-        meetingId: result.session.meetingId,
-        title: result.session.title,
-        status: result.session.status,
-        transcript: result.transcript,
-        summary: result.summary,
+        recordingSessionId: completedSession.recordingSessionId,
+        meetingId: completedSession.meetingId,
+        title: completedSession.title,
+        status: completedSession.status,
+        durationSeconds: completedSession.durationSeconds,
+        audioBytes: completedSession.audioBytes,
+        audioChunkCount: completedSession.audioChunkCount,
+        audioArtifactId: completedSession.audioArtifactId,
+        transcriptionStatus: completedSession.transcriptionStatus,
+        synchronizationStatus: completedSession.synchronizationStatus,
+        transcript: ingressResult.transcript,
+        summary: ingressResult.summary,
       },
+      session: completedSession,
     });
   } catch (error: any) {
+    recordingSessionService.failSession(existingSession.recordingSessionId, "SYNTHESIS_FAILED", error.message);
     res.status(500).json({
       success: false,
       error: error.message || "STOP_RECORDING_FAILED",
     });
   }
-});
+};
+
+recordingRouter.post("/stop", requireAuth, handleStopRecording);
+recordingRouter.post("/session/:id/stop", requireAuth, handleStopRecording);
 
 /**
  * POST /api/recording/transcribe
@@ -194,19 +313,23 @@ recordingRouter.post("/transcribe", requireAuth, async (req: Request, res: Respo
 });
 
 /**
- * GET /api/recording/status/:id
- * Retrieves current status with tenant authorization validation.
+ * GET /api/recording/status/:id or GET /api/recording/session/:id
+ * Retrieves full recording session metadata with tenant authorization validation.
  */
-recordingRouter.get("/status/:id", requireAuth, (req: Request, res: Response) => {
-  const session = ingressOrchestrator.getSession(req.params.id);
+const handleGetSessionStatus = (req: Request, res: Response) => {
+  const session = recordingSessionService.resolveSession(req.params.id) || ingressOrchestrator.getSession(req.params.id);
   const userId = req.user?.userId || "user_default_workspace_id";
 
   if (!session) {
     return res.status(404).json({ success: false, error: "SESSION_NOT_FOUND" });
   }
 
-  // IDOR Guard: Check participant access
-  if (!session.userIds.has(userId) && req.user?.role !== "admin") {
+  const isUserAllowed =
+    (Array.isArray((session as any).userIds) && (session as any).userIds.includes(userId)) ||
+    ((session as any).userIds instanceof Set && (session as any).userIds.has(userId)) ||
+    req.user?.role === "admin";
+
+  if (!isUserAllowed) {
     return res.status(403).json({
       success: false,
       error: "FORBIDDEN_NOT_SESSION_PARTICIPANT",
@@ -215,13 +338,37 @@ recordingRouter.get("/status/:id", requireAuth, (req: Request, res: Response) =>
 
   res.json({
     success: true,
-    session: {
-      meetingId: session.meetingId,
-      status: session.status,
+    session,
+    data: session,
+  });
+};
+
+recordingRouter.get("/status/:id", requireAuth, handleGetSessionStatus);
+recordingRouter.get("/session/:id", requireAuth, handleGetSessionStatus);
+
+/**
+ * GET /api/recording/session/:id/artifact
+ * Returns audio artifact metadata for verifiable proof of recording.
+ */
+recordingRouter.get("/session/:id/artifact", requireAuth, (req: Request, res: Response) => {
+  const session = recordingSessionService.resolveSession(req.params.id);
+  if (!session || !session.audioArtifactPath) {
+    return res.status(404).json({ success: false, error: "ARTIFACT_NOT_FOUND" });
+  }
+
+  const exists = fs.existsSync(session.audioArtifactPath);
+  const sizeBytes = exists ? fs.statSync(session.audioArtifactPath).size : 0;
+
+  res.json({
+    success: true,
+    data: {
+      recordingSessionId: session.recordingSessionId,
+      audioArtifactId: session.audioArtifactId,
+      audioBytes: session.audioBytes,
+      audioChunkCount: session.audioChunkCount,
+      diskSizeBytes: sizeBytes,
       durationSeconds: session.durationSeconds,
-      isPaused: session.isPaused,
-      audioPowerLevel: session.audioPowerLevel,
-      dedupHash: session.dedupHash,
+      status: session.status,
     },
   });
 });
@@ -241,26 +388,35 @@ recordingRouter.get("/events", requireAuth, (req: Request, res: Response) => {
   // Send initial handshake
   res.write(`data: ${JSON.stringify({ type: "CONNECTED", userId: currentUserId, timestamp: new Date().toISOString() })}\n\n`);
 
-  // User-partitioned event filter: only push events for sessions this user participates in
-  const onIngressEvent = (data: any) => {
-    const session = ingressOrchestrator.getSession(data.dedupHash || data.meetingId);
-    if (!session || session.userIds.has(currentUserId) || req.user?.role === "admin") {
-      res.write(`data: ${JSON.stringify(data)}\n\n`);
+  // Stream lifecycle events from recordingSessionService
+  const onLifecycleEvent = (data: any) => {
+    const session = recordingSessionService.resolveSession(data.recordingSessionId || data.dedupHash);
+    if (!session || session.userIds.includes(currentUserId) || req.user?.role === "admin") {
+      res.write(`data: ${JSON.stringify({ type: "LIFECYCLE_EVENT", ...data })}\n\n`);
+    }
+  };
+
+  const onAudioChunk = (data: any) => {
+    const session = recordingSessionService.resolveSession(data.recordingSessionId);
+    if (!session || session.userIds.includes(currentUserId) || req.user?.role === "admin") {
+      res.write(`data: ${JSON.stringify({ type: "AUDIO_CHUNK", ...data })}\n\n`);
     }
   };
 
   const onVadUpdate = (data: any) => {
-    const session = ingressOrchestrator.getSession(data.meetingId);
-    if (!session || session.userIds.has(currentUserId) || req.user?.role === "admin") {
+    const session = recordingSessionService.resolveSession(data.recordingSessionId || data.meetingId);
+    if (!session || (session && session.userIds.includes(currentUserId)) || req.user?.role === "admin") {
       res.write(`data: ${JSON.stringify({ type: "VAD_LEVEL", ...data })}\n\n`);
     }
   };
 
-  ingressOrchestrator.on("ingress_event", onIngressEvent);
-  ingressOrchestrator.on("vad_update", onVadUpdate);
+  recordingSessionService.on("recording_lifecycle_event", onLifecycleEvent);
+  recordingSessionService.on("audio_chunk", onAudioChunk);
+  recordingSessionService.on("vad_update", onVadUpdate);
 
   req.on("close", () => {
-    ingressOrchestrator.off("ingress_event", onIngressEvent);
-    ingressOrchestrator.off("vad_update", onVadUpdate);
+    recordingSessionService.off("recording_lifecycle_event", onLifecycleEvent);
+    recordingSessionService.off("audio_chunk", onAudioChunk);
+    recordingSessionService.off("vad_update", onVadUpdate);
   });
 });
