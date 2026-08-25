@@ -4,8 +4,13 @@ import { encryptToken, decryptToken } from "./crypto.js";
 
 export interface StoredOAuthRecord {
   userId: string;
+  googleSubjectId?: string;
   email: string;
   name: string;
+  displayName?: string;
+  firstName?: string;
+  lastName?: string;
+  avatarUrl?: string;
   encryptedAccessToken: string;
   encryptedRefreshToken?: string;
   expiresAt: number; // Unix timestamp in ms
@@ -16,8 +21,13 @@ export interface StoredOAuthRecord {
 
 export interface SafeUserSession {
   userId: string;
+  googleSubjectId?: string;
   email: string;
   name: string;
+  displayName: string;
+  firstName?: string;
+  lastName?: string;
+  avatarUrl?: string;
   isConnected: boolean;
   expiresAt: number;
   scopes: string[];
@@ -66,12 +76,17 @@ class TokenVault {
   }
 
   /**
-   * Securely saves OAuth tokens in the vault using AES-256-GCM encryption.
+   * Securely saves OAuth tokens and canonical identity in the vault using AES-256-GCM encryption.
    */
   public saveTokens(params: {
     userId: string;
+    googleSubjectId?: string;
     email: string;
     name: string;
+    displayName?: string;
+    firstName?: string;
+    lastName?: string;
+    avatarUrl?: string;
     accessToken: string;
     refreshToken?: string;
     expiresInSeconds: number;
@@ -81,8 +96,13 @@ class TokenVault {
 
     const record: StoredOAuthRecord = {
       userId: params.userId,
+      googleSubjectId: params.googleSubjectId,
       email: params.email,
       name: params.name,
+      displayName: params.displayName || params.name,
+      firstName: params.firstName,
+      lastName: params.lastName,
+      avatarUrl: params.avatarUrl,
       encryptedAccessToken: encryptToken(params.accessToken),
       encryptedRefreshToken: params.refreshToken ? encryptToken(params.refreshToken) : undefined,
       expiresAt,
@@ -93,6 +113,18 @@ class TokenVault {
 
     this.vault.set(params.userId, record);
     this.persistToDisk();
+  }
+
+  /**
+   * Looks up a user record by Google subject ID or email.
+   */
+  public findByGoogleSubjectOrEmail(identifier: string): StoredOAuthRecord | null {
+    for (const record of this.vault.values()) {
+      if (record.googleSubjectId === identifier || record.email.toLowerCase() === identifier.toLowerCase()) {
+        return record;
+      }
+    }
+    return null;
   }
 
   /**
@@ -119,7 +151,6 @@ class TokenVault {
   public hasValidSession(userId: string): boolean {
     const record = this.vault.get(userId);
     if (!record) return false;
-    // Session valid if not expired (or within refresh window)
     return record.expiresAt > Date.now();
   }
 
@@ -133,8 +164,13 @@ class TokenVault {
 
     return {
       userId: record.userId,
+      googleSubjectId: record.googleSubjectId,
       email: record.email,
       name: record.name,
+      displayName: record.displayName || record.name,
+      firstName: record.firstName,
+      lastName: record.lastName,
+      avatarUrl: record.avatarUrl,
       isConnected: true,
       expiresAt: record.expiresAt,
       scopes: record.scopes,

@@ -282,9 +282,18 @@ export const AppHeader: React.FC<AppHeaderProps> = ({
               className="flex items-center gap-2 p-1 pl-2 rounded-xl hover:bg-[var(--surface-subtle)] border border-[var(--border-default)] transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-[var(--border-focus)] outline-none"
               title={user.email}
             >
-              <div className="w-6 h-6 rounded-full bg-[var(--primary-action)] text-white text-[10px] font-bold flex items-center justify-center">
-                {userInitials}
-              </div>
+              {user.avatarUrl ? (
+                <img
+                  src={user.avatarUrl}
+                  alt={user.name}
+                  className="w-6 h-6 rounded-full object-cover border border-[var(--border-subtle)]"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <div className="w-6 h-6 rounded-full bg-[var(--primary-action)] text-white text-[10px] font-bold flex items-center justify-center">
+                  {userInitials}
+                </div>
+              )}
               <span className="text-xs font-medium text-[var(--text-primary)] max-w-[100px] truncate hidden md:inline">
                 {user.name.split(" ")[0]}
               </span>

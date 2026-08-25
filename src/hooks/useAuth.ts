@@ -4,8 +4,12 @@ import { desktopBridge } from "../lib/desktopBridge";
 
 export interface UserProfile {
   id: string;
+  googleSubjectId?: string;
   email: string;
   name: string;
+  displayName?: string;
+  firstName?: string;
+  lastName?: string;
   avatarUrl?: string;
   organization?: string;
   provider: "google" | "email" | "demo";
@@ -103,6 +107,9 @@ export function useAuth() {
     const cbName = params.get("name");
     const cbError = params.get("error");
     const cbAvatar = params.get("avatarUrl");
+    const cbSub = params.get("googleSubjectId") || params.get("sub");
+    const cbFirstName = params.get("firstName");
+    const cbLastName = params.get("lastName");
 
     if (cbError) {
       setAuthError(cbError === "access_denied" ? "Google sign-in was cancelled." : `Authentication error: ${cbError}`);
@@ -111,10 +118,19 @@ export function useAuth() {
     }
 
     if (cbEmail) {
+      const displayName =
+        cbName ||
+        (cbFirstName ? `${cbFirstName} ${cbLastName || ""}`.trim() : "") ||
+        cbEmail.split("@")[0].replace(/[._-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
       const newUser: UserProfile = {
         id: cbUserId || `usr_${Date.now()}`,
+        googleSubjectId: cbSub || undefined,
         email: cbEmail,
-        name: cbName || cbEmail.split("@")[0],
+        name: displayName,
+        displayName,
+        firstName: cbFirstName || undefined,
+        lastName: cbLastName || undefined,
         avatarUrl: cbAvatar || undefined,
         organization: cbEmail.split("@")[1] || "Workspace",
         provider: "google",

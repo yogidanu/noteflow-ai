@@ -197,8 +197,11 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
       });
     }
 
-    let userEmail = "workspace.user@noteflow.ai";
-    let userName = "Workspace Member";
+    let googleSubjectId: string | undefined;
+    let userEmail = "";
+    let userName = "";
+    let firstName: string | undefined;
+    let lastName: string | undefined;
     let userAvatar: string | undefined;
     let accessToken = `ya29.auth_${crypto.randomBytes(16).toString("hex")}`;
     let refreshToken = `1//refresh_${crypto.randomBytes(16).toString("hex")}`;
@@ -225,16 +228,37 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
           refreshToken = tokenData.refresh_token || refreshToken;
           expiresInSeconds = tokenData.expires_in || 3600;
 
-          // Fetch Google User Profile info
+          // A. Decode OpenID Connect ID Token if provided by Google
+          if (tokenData.id_token) {
+            try {
+              const parts = tokenData.id_token.split(".");
+              if (parts.length >= 2) {
+                const decoded = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+                googleSubjectId = decoded.sub || googleSubjectId;
+                userEmail = decoded.email || userEmail;
+                userName = decoded.name || userName;
+                firstName = decoded.given_name || firstName;
+                lastName = decoded.family_name || lastName;
+                userAvatar = decoded.picture || userAvatar;
+              }
+            } catch (idTokenErr) {
+              // continue to userinfo endpoint
+            }
+          }
+
+          // B. Fetch Google User Profile info
           const userProfileRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
             headers: { Authorization: `Bearer ${accessToken}` },
           });
 
           if (userProfileRes.ok) {
             const profileData: any = await userProfileRes.json();
+            googleSubjectId = profileData.id || profileData.sub || googleSubjectId;
             userEmail = profileData.email || userEmail;
-            userName = profileData.name || profileData.given_name || userName;
-            userAvatar = profileData.picture || undefined;
+            userName = profileData.name || (profileData.given_name ? `${profileData.given_name} ${profileData.family_name || ""}`.trim() : userName);
+            firstName = profileData.given_name || firstName;
+            lastName = profileData.family_name || lastName;
+            userAvatar = profileData.picture || userAvatar;
           }
         } else {
           const errText = await tokenRes.text();
@@ -245,13 +269,44 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
       }
     }
 
-    const userId = `usr_${crypto.createHash("sha256").update(userEmail).digest("hex").substring(0, 16)}`;
+    // Deterministic identity fallback: never silently invent a random user
+    if (!userEmail) {
+      userEmail = (req.query?.email as string) || "user@workspace.design";
+    }
 
-    // 6. Encrypt and persist tokens into secure vault
+    if (!userName) {
+      if (firstName || lastName) {
+        userName = `${firstName || ""} ${lastName || ""}`.trim();
+      } else if (userEmail.includes("@")) {
+        const localPart = userEmail.split("@")[0];
+        userName = localPart.replace(/[._-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+      } else {
+        userName = "Workspace User";
+      }
+    }
+
+    // Stable Canonical User ID: Priority on Google Subject ID, fallback to deterministic email hash
+    const userId = googleSubjectId
+      ? `usr_g_${crypto.createHash("sha256").update(googleSubjectId).digest("hex").substring(0, 16)}`
+      : `usr_${crypto.createHash("sha256").update(userEmail.toLowerCase().trim()).digest("hex").substring(0, 16)}`;
+
+    console.log("[OAuth DEBUG] CANONICAL_IDENTITY_RESOLVED", {
+      userId,
+      googleSubjectFingerprint: googleSubjectId ? crypto.createHash("sha256").update(googleSubjectId).digest("hex").substring(0, 12) : "none",
+      emailDomain: userEmail.includes("@") ? userEmail.split("@")[1] : "unknown",
+      hasAvatar: Boolean(userAvatar),
+    });
+
+    // 6. Encrypt and persist canonical tokens and profile into secure vault
     tokenVault.saveTokens({
       userId,
+      googleSubjectId,
       email: userEmail,
       name: userName,
+      displayName: userName,
+      firstName,
+      lastName,
+      avatarUrl: userAvatar,
       accessToken,
       refreshToken,
       expiresInSeconds,
@@ -264,16 +319,30 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
       const oneTimeCode = `auth_${Date.now()}_${crypto.randomBytes(8).toString("hex")}`;
       desktopAuthCodeCache.set(oneTimeCode, {
         userId,
+        googleSubjectId,
         email: userEmail,
         name: userName,
+        displayName: userName,
+        firstName,
+        lastName,
+        avatarUrl: userAvatar,
         codeChallenge: stateRecord.codeChallenge || "",
         createdAt: Date.now(),
       });
 
       console.log(`[OAuth DEBUG] Redirecting desktop OAuth callback to noteflow://auth/callback`);
-      return res.redirect(
-        `noteflow://auth/callback?code=${encodeURIComponent(oneTimeCode)}&state=${encodeURIComponent(state)}&email=${encodeURIComponent(userEmail)}&name=${encodeURIComponent(userName)}`
-      );
+      const desktopRedirect = new URL("noteflow://auth/callback");
+      desktopRedirect.searchParams.set("code", oneTimeCode);
+      desktopRedirect.searchParams.set("state", state);
+      desktopRedirect.searchParams.set("userId", userId);
+      desktopRedirect.searchParams.set("email", userEmail);
+      desktopRedirect.searchParams.set("name", userName);
+      if (googleSubjectId) desktopRedirect.searchParams.set("googleSubjectId", googleSubjectId);
+      if (firstName) desktopRedirect.searchParams.set("firstName", firstName);
+      if (lastName) desktopRedirect.searchParams.set("lastName", lastName);
+      if (userAvatar) desktopRedirect.searchParams.set("avatarUrl", userAvatar);
+
+      return res.redirect(desktopRedirect.toString());
     }
 
     // Web flow redirect back to frontend
@@ -283,6 +352,9 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
     redirectUrl.searchParams.set("email", userEmail);
     redirectUrl.searchParams.set("name", userName);
     redirectUrl.searchParams.set("state", state);
+    if (googleSubjectId) redirectUrl.searchParams.set("googleSubjectId", googleSubjectId);
+    if (firstName) redirectUrl.searchParams.set("firstName", firstName);
+    if (lastName) redirectUrl.searchParams.set("lastName", lastName);
     if (userAvatar) redirectUrl.searchParams.set("avatarUrl", userAvatar);
 
     console.log(`[OAuth DEBUG] Redirecting web OAuth callback to ${redirectUrl.origin}`);
@@ -358,8 +430,13 @@ authRouter.post("/token", async (req: Request, res: Response) => {
       session: safeSession,
       user: {
         id: safeSession.userId,
+        googleSubjectId: safeSession.googleSubjectId,
         email: safeSession.email,
         name: safeSession.name,
+        displayName: safeSession.displayName,
+        firstName: safeSession.firstName,
+        lastName: safeSession.lastName,
+        avatarUrl: safeSession.avatarUrl,
       },
     });
   } catch (err: any) {
@@ -379,7 +456,7 @@ authRouter.post("/token", async (req: Request, res: Response) => {
  */
 authRouter.post("/google/exchange", async (req: Request, res: Response) => {
   try {
-    const { code, state, email, name, avatarUrl, code_challenge } = req.body;
+    const { code, state, email, name, avatarUrl, code_challenge, googleSubjectId } = req.body;
 
     // Validate and consume CSRF State if code exchange is being performed
     let stateRecord: OAuthStateRecord | null = null;
@@ -387,8 +464,11 @@ authRouter.post("/google/exchange", async (req: Request, res: Response) => {
       stateRecord = oauthStateStore.consumeState(state);
     }
 
+    let resolvedSub = googleSubjectId;
     let userEmail = email;
     let userName = name;
+    let firstName: string | undefined;
+    let lastName: string | undefined;
     let userAvatar = avatarUrl;
     let accessToken = `ya29.auth_${crypto.randomBytes(16).toString("hex")}`;
     let refreshToken = `1//refresh_${crypto.randomBytes(16).toString("hex")}`;
@@ -410,8 +490,8 @@ authRouter.post("/google/exchange", async (req: Request, res: Response) => {
         });
 
         if (tokenRes.ok) {
-          const tokenData = await tokenRes.json();
-          accessToken = tokenData.access_token;
+          const tokenData: any = await tokenRes.json();
+          accessToken = tokenData.access_token || accessToken;
           if (tokenData.refresh_token) {
             refreshToken = tokenData.refresh_token;
           }
@@ -419,16 +499,37 @@ authRouter.post("/google/exchange", async (req: Request, res: Response) => {
             expiresInSeconds = tokenData.expires_in;
           }
 
-          // Fetch user profile from Google
+          // Decode OpenID ID token
+          if (tokenData.id_token) {
+            try {
+              const parts = tokenData.id_token.split(".");
+              if (parts.length >= 2) {
+                const decoded = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+                resolvedSub = decoded.sub || resolvedSub;
+                userEmail = decoded.email || userEmail;
+                userName = decoded.name || userName;
+                firstName = decoded.given_name || firstName;
+                lastName = decoded.family_name || lastName;
+                userAvatar = decoded.picture || userAvatar;
+              }
+            } catch {
+              // continue
+            }
+          }
+
+          // Fetch user profile from Google UserInfo
           const profileRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
             headers: { Authorization: `Bearer ${accessToken}` },
           });
 
           if (profileRes.ok) {
-            const profile = await profileRes.json();
-            userEmail = profile.email;
-            userName = profile.name;
-            userAvatar = profile.picture;
+            const profile: any = await profileRes.json();
+            resolvedSub = profile.id || profile.sub || resolvedSub;
+            userEmail = profile.email || userEmail;
+            userName = profile.name || (profile.given_name ? `${profile.given_name} ${profile.family_name || ""}`.trim() : userName);
+            firstName = profile.given_name || firstName;
+            lastName = profile.family_name || lastName;
+            userAvatar = profile.picture || userAvatar;
           }
         }
       } catch (tokenErr) {
@@ -444,13 +545,31 @@ authRouter.post("/google/exchange", async (req: Request, res: Response) => {
       });
     }
 
-    const userId = `usr_${crypto.createHash("sha256").update(userEmail).digest("hex").substring(0, 16)}`;
+    if (!userName) {
+      if (firstName || lastName) {
+        userName = `${firstName || ""} ${lastName || ""}`.trim();
+      } else if (userEmail.includes("@")) {
+        const localPart = userEmail.split("@")[0];
+        userName = localPart.replace(/[._-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+      } else {
+        userName = "Workspace User";
+      }
+    }
+
+    const userId = resolvedSub
+      ? `usr_g_${crypto.createHash("sha256").update(resolvedSub).digest("hex").substring(0, 16)}`
+      : `usr_${crypto.createHash("sha256").update(userEmail.toLowerCase().trim()).digest("hex").substring(0, 16)}`;
 
     // Store encrypted tokens in vault
     tokenVault.saveTokens({
       userId,
+      googleSubjectId: resolvedSub,
       email: userEmail,
-      name: userName || userEmail.split("@")[0],
+      name: userName,
+      displayName: userName,
+      firstName,
+      lastName,
+      avatarUrl: userAvatar,
       accessToken,
       refreshToken,
       expiresInSeconds,
@@ -459,26 +578,37 @@ authRouter.post("/google/exchange", async (req: Request, res: Response) => {
 
     const safeSession = tokenVault.getSafeSession(userId);
 
+    const userProfilePayload = {
+      id: userId,
+      googleSubjectId: resolvedSub,
+      email: userEmail,
+      name: userName,
+      displayName: userName,
+      firstName,
+      lastName,
+      avatarUrl: userAvatar,
+    };
+
     // If a code_challenge was attached, cache one-time desktop auth code
     const challenge = code_challenge || stateRecord?.codeChallenge;
     if (challenge) {
       const oneTimeCode = `auth_${Date.now()}_${crypto.randomBytes(8).toString("hex")}`;
       desktopAuthCodeCache.set(oneTimeCode, {
         userId,
+        googleSubjectId: resolvedSub,
         email: userEmail,
-        name: userName || userEmail.split("@")[0],
+        name: userName,
+        displayName: userName,
+        firstName,
+        lastName,
+        avatarUrl: userAvatar,
         codeChallenge: challenge,
         createdAt: Date.now(),
       });
 
       return res.json({
         success: true,
-        user: {
-          id: userId,
-          email: userEmail,
-          name: userName || userEmail.split("@")[0],
-          avatarUrl: userAvatar,
-        },
+        user: userProfilePayload,
         session: safeSession,
         authCode: oneTimeCode,
       });
@@ -486,12 +616,7 @@ authRouter.post("/google/exchange", async (req: Request, res: Response) => {
 
     res.json({
       success: true,
-      user: {
-        id: userId,
-        email: userEmail,
-        name: userName || userEmail.split("@")[0],
-        avatarUrl: userAvatar,
-      },
+      user: userProfilePayload,
       session: safeSession,
     });
   } catch (err: any) {
