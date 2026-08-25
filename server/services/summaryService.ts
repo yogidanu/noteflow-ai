@@ -52,95 +52,217 @@ export interface AIAnalysisResult {
 
 export class SummaryService {
   /**
-   * Generates a grounded, multi-perspective summary with exact citation bindings.
+   * Generates a grounded, multi-perspective summary with exact citation bindings dynamically from the transcript.
    */
   public generateSummary(
     transcript: SanitizedTranscriptPayload,
     refinement: string = "standard"
   ): AIAnalysisResult {
-    const segments = transcript.segments;
-    const wordCount = transcript.sanitizedText.split(/\s+/).length;
-    const durationMinutes = Math.max(1, Math.round(transcript.durationSeconds / 60));
+    const segments = transcript.segments || [];
+    const text = transcript.sanitizedText || segments.map((s) => s.text).join(" ");
+    const words = text.trim().split(/\s+/).filter(Boolean);
+    const wordCount = words.length;
+    const durationMinutes = Math.max(1, Math.round((transcript.durationSeconds || wordCount * 0.5) / 60));
+    const speakers = transcript.detectedSpeakers && transcript.detectedSpeakers.length > 0
+      ? transcript.detectedSpeakers
+      : Array.from(new Set(segments.map((s) => s.speaker).filter(Boolean)));
 
-    // Decision items with verbatim grounding
-    const decisions: DecisionItem[] = [
-      {
-        id: "dec-srv-1",
-        text: "The public GA release date is locked to September 1st, 2026.",
-        rationale:
-          "Allows 10 additional business days to resolve third-party SOC-2 audit and penetration testing items cleanly.",
-        confidence: "high",
-        citation: this.findCitation(segments, "locking the public release date to September 1st"),
-      },
-      {
-        id: "dec-srv-2",
-        text: "Standardize on PostgreSQL with pgvector for the core metadata and event stream layer.",
-        rationale:
-          "Benchmarking demonstrated 40% lower query latency under multi-tenant load compared to MongoDB.",
-        confidence: "high",
-        citation: this.findCitation(segments, "standardize on PostgreSQL for the core metadata layer"),
-      },
+    if (segments.length === 0 || wordCount < 6) {
+      return {
+        executiveSummary: "Transcript was too brief to extract meaningful decisions or action items.",
+        decisions: [],
+        actionItems: [],
+        unresolvedQuestions: [],
+        detectedSpeakers: speakers,
+        wordCount,
+        estimatedMeetingDurationMinutes: durationMinutes,
+        modelConfidence: "low",
+        appliedRefinement: refinement,
+        isPartialCapture: true,
+      };
+    }
+
+    const decisions: DecisionItem[] = [];
+    const actionItems: ActionItem[] = [];
+    const unresolvedQuestions: UnresolvedQuestion[] = [];
+
+    // 1. Dynamic Decision Extraction
+    const decisionKeywords = [
+      "decided to",
+      "we decided",
+      "decision reached",
+      "decision:",
+      "officially locking",
+      "lock in",
+      "standardize on",
+      "standardize",
+      "agreed that",
+      "we agreed",
+      "approved to",
+      "approved",
+      "selected",
+      "we will go with",
+      "moving forward with",
+      "chosen to",
+      "conclusion that",
     ];
 
-    // Action items with assignees and due dates
-    const actionItems: ActionItem[] = [
-      {
-        id: "act-srv-1",
-        task: "Update release milestone tracker in Jira and notify executive steering committee",
-        assignee: "Marcus Brody",
-        dueDate: "Friday by 3:00 PM",
-        isCompleted: false,
-        priority: "high",
-        citation: this.findCitation(segments, "update the release tracker in Jira"),
-      },
-      {
-        id: "act-srv-2",
-        task: "Provision staging RDS PostgreSQL cluster and share connection strings with Danu's team",
-        assignee: "Elena Rostova",
-        dueDate: "Wednesday morning",
-        isCompleted: false,
-        priority: "medium",
-        citation: this.findCitation(segments, "provision the staging RDS cluster"),
-      },
+    segments.forEach((seg, idx) => {
+      const lower = seg.text.toLowerCase();
+      const hasDecision = decisionKeywords.some((kw) => lower.includes(kw));
+
+      if (hasDecision && decisions.length < 6) {
+        let cleanText = seg.text
+          .replace(/^(decision reached:?|decision:?|we decided to?|we agreed to?)\s*/i, "")
+          .trim();
+        cleanText = cleanText.charAt(0).toUpperCase() + cleanText.slice(1);
+
+        let rationale: string | undefined;
+        const rationaleMatch = seg.text.match(/(?:because|since|to ensure|in order to|allows|given)\s+([^.!?]+)/i);
+        if (rationaleMatch) {
+          rationale = rationaleMatch[0].charAt(0).toUpperCase() + rationaleMatch[0].slice(1);
+        }
+
+        decisions.push({
+          id: `dec-dyn-${idx + 1}`,
+          text: cleanText,
+          rationale: rationale || "Agreed upon by participants during discussion.",
+          confidence: "high",
+          citation: {
+            id: `cit-dec-${idx}`,
+            speaker: seg.speaker,
+            timestamp: seg.timestamp,
+            rawText: seg.text,
+            lineIndex: seg.lineIndex ?? idx,
+          },
+        });
+      }
+    });
+
+    // Fallback decision if conversation was substantive but lacked explicit keywords
+    if (decisions.length === 0 && segments.length >= 2) {
+      const substantiveSeg = segments.find((s) => s.text.length > 30) || segments[0];
+      decisions.push({
+        id: "dec-dyn-1",
+        text: `Participants aligned on: "${substantiveSeg.text.substring(0, 100)}..."`,
+        rationale: "Established as working consensus during the session.",
+        confidence: "tentative",
+        citation: {
+          id: `cit-dec-0`,
+          speaker: substantiveSeg.speaker,
+          timestamp: substantiveSeg.timestamp,
+          rawText: substantiveSeg.text,
+          lineIndex: substantiveSeg.lineIndex ?? 0,
+        },
+      });
+    }
+
+    // 2. Dynamic Action Item Extraction
+    const actionKeywords = [
+      "will do",
+      "i will",
+      "i'll",
+      "can you",
+      "please",
+      "assigned to",
+      "action item",
+      "take ownership",
+      "follow up",
+      "update",
+      "provision",
+      "notify",
+      "schedule",
+      "review",
+      "send",
     ];
 
-    // Unresolved questions parking lot
-    const unresolvedQuestions: UnresolvedQuestion[] = [
-      {
-        id: "q-srv-1",
-        question: "Is SAML 2.0 enterprise SSO required for Day 1 of the September 1st launch, or can it slip to v1.1?",
-        suggestedFollowUp: "Sarah Chen to check Enterprise Sales pipeline commitments and follow up on Slack.",
-        citation: this.findCitation(segments, "Do we need SAML 2.0 enterprise SSO ready for day one"),
-      },
-      {
-        id: "q-srv-2",
-        question: "Who is the designated point of contact for GDPR data deletion requests?",
-        suggestedFollowUp: "Await legal counsel confirmation before assigning operational ownership.",
-        citation: this.findCitation(segments, "who is the designated point-of-contact for GDPR"),
-      },
-    ];
+    segments.forEach((seg, idx) => {
+      const lower = seg.text.toLowerCase();
+      const hasAction = actionKeywords.some((kw) => lower.includes(kw));
 
-    // Formulate Executive Summary based on perspective
-    let executiveSummary = `Context & Strategic Framing:
-Sarah Chen facilitated the Q3 Architecture and Release planning sync with Marcus Brody and Elena Rostova to finalize the public launch timeline and database infrastructure.
+      if (hasAction && actionItems.length < 8) {
+        // Extract possible assignee from segment speaker or direct mention
+        let assignee = seg.speaker;
+        const directMention = seg.text.match(/^([A-Z][a-z]+(?: [A-Z][a-z]+)?),\s*(?:can you|please|will you)/);
+        if (directMention) {
+          assignee = directMention[1];
+        }
 
-Key Outcomes & Technical Direction:
-The team officially moved the GA release date from August 15th to September 1st, 2026 to ensure full remediation of SOC-2 pen-test findings. Following performance benchmarks showing a 40% latency advantage, the team standardized on PostgreSQL with pgvector for core metadata storage over MongoDB.
+        // Extract due date if present
+        let dueDate: string | undefined;
+        const dueMatch = seg.text.match(/\b(?:by|on|before|for)\s+(?:friday|monday|tuesday|wednesday|thursday|tomorrow|next week|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)[^.,!?]*/i);
+        if (dueMatch) {
+          dueDate = dueMatch[0].trim();
+        }
 
-Next Steps:
-Marcus is updating the Jira roadmap for the executive committee by Friday, while Elena will provision staging database clusters by Wednesday morning.`;
+        let taskText = seg.text
+          .replace(/^([A-Za-z\s]+),\s*(can you|please|will you)\s*/i, "")
+          .replace(/^(will do\.?|i will|i'll)\s*/i, "")
+          .trim();
+        taskText = taskText.charAt(0).toUpperCase() + taskText.slice(1);
+
+        actionItems.push({
+          id: `act-dyn-${idx + 1}`,
+          task: taskText,
+          assignee: assignee || "Team Member",
+          dueDate: dueDate || "Upcoming Sprint",
+          isCompleted: false,
+          priority: dueDate ? "high" : "medium",
+          citation: {
+            id: `cit-act-${idx}`,
+            speaker: seg.speaker,
+            timestamp: seg.timestamp,
+            rawText: seg.text,
+            lineIndex: seg.lineIndex ?? idx,
+          },
+        });
+      }
+    });
+
+    // 3. Dynamic Unresolved Questions
+    segments.forEach((seg, idx) => {
+      if (seg.text.includes("?") && unresolvedQuestions.length < 5) {
+        unresolvedQuestions.push({
+          id: `q-dyn-${idx + 1}`,
+          question: seg.text.trim(),
+          suggestedFollowUp: `Follow up with ${seg.speaker} to clarify open question.`,
+          citation: {
+            id: `cit-q-${idx}`,
+            speaker: seg.speaker,
+            timestamp: seg.timestamp,
+            rawText: seg.text,
+            lineIndex: seg.lineIndex ?? idx,
+          },
+        });
+      }
+    });
+
+    // 4. Dynamic Executive Summary
+    const speakerList = speakers.length > 0 ? speakers.join(", ") : "The team";
+    let executiveSummary = `Meeting Overview:\n${speakerList} convened to discuss key operational items, review active deliverables, and establish milestones.\n\nKey Outcomes:\n${
+      decisions.length > 0
+        ? decisions.map((d) => `• ${d.text}`).join("\n")
+        : "• Discussion completed with aligned working direction."
+    }\n\nAction Items & Next Steps:\n${
+      actionItems.length > 0
+        ? actionItems.map((a) => `• ${a.assignee}: ${a.task} (${a.dueDate || "In progress"})`).join("\n")
+        : "• No explicit action items assigned."
+    }`;
 
     if (refinement === "executive") {
-      executiveSummary = `Executive Briefing:
-• GA Launch Timeline: Locked to September 1st, 2026 to complete mandatory SOC-2 compliance audits.
-• Infrastructure Decision: Standardized on PostgreSQL with pgvector (40% latency reduction over MongoDB).
-• Immediate Milestones: Milestone tracker published Friday; RDS staging environment ready Wednesday.`;
+      executiveSummary = `Executive Briefing:\n• Core Focus: Key sync between ${speakerList}.\n• Primary Decisions:\n${
+        decisions.map((d) => `  - ${d.text}`).join("\n") || "  - Consensus reached on core discussion topics."
+      }\n• Immediate Milestones:\n${
+        actionItems.map((a) => `  - ${a.assignee}: ${a.task}`).join("\n") || "  - Team executing on standard timeline."
+      }`;
     } else if (refinement === "action_focused") {
-      executiveSummary = `Action-Focused Digest:
-Primary focus is unblocking the September 1st GA release through database provisioning and SOC-2 audit remediation. Marcus Brody owns Jira milestone communication (due Friday); Elena Rostova owns RDS PostgreSQL provisioning (due Wednesday).`;
+      executiveSummary = `Action-Focused Digest:\nPrimary focus is executing key follow-ups from the sync.\n${
+        actionItems.map((a) => `• [${a.assignee}] ${a.task} (Due: ${a.dueDate || "TBD"})`).join("\n") || "• No pending actions."
+      }`;
     } else if (refinement === "technical") {
-      executiveSummary = `Technical Architecture Scope:
-PostgreSQL with pgvector selected as primary multi-tenant metadata store based on benchmark evaluations. SOC-2 high-severity vulnerability remediation scheduled across the next 10 business days before staging freeze.`;
+      executiveSummary = `Technical Architecture & Execution Scope:\nParticipants (${speakerList}) evaluated technical considerations and operational workflows.\nDecisions:\n${
+        decisions.map((d) => `• ${d.text}`).join("\n") || "• Technical alignment established."
+      }`;
     }
 
     return {
@@ -148,7 +270,7 @@ PostgreSQL with pgvector selected as primary multi-tenant metadata store based o
       decisions,
       actionItems,
       unresolvedQuestions,
-      detectedSpeakers: transcript.detectedSpeakers,
+      detectedSpeakers: speakers,
       wordCount,
       estimatedMeetingDurationMinutes: durationMinutes,
       modelConfidence: "high",

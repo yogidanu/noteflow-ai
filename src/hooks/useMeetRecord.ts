@@ -438,7 +438,7 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
       if (target) {
         updateMeetingStatus(id, "transcribing");
 
-        let resolvedTranscript = target.sampleTranscriptPreset || SAMPLE_ZOOM_TRANSCRIPT;
+        let resolvedTranscript = isDemoMode ? (target.sampleTranscriptPreset || SAMPLE_ZOOM_TRANSCRIPT) : (target.sampleTranscriptPreset || "");
 
         // Stop session and trigger synthesis on backend
         if (target.dedupHash && !isDemoMode) {
@@ -500,7 +500,6 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
       recordingStatus: isMeet ? "recording" : "error",
       errorReason: isMeet ? undefined : "UNSUPPORTED_PLATFORM",
       dedupHash: `hash_${Date.now()}`,
-      sampleTranscriptPreset: SAMPLE_ZOOM_TRANSCRIPT,
     };
 
     setDetectedMeetings((prev) => [newMeeting, ...prev]);
