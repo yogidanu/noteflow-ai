@@ -1,4 +1,5 @@
 import { SanitizedTranscriptPayload, DiarizedSegment } from "./sttService.js";
+import { recordingLogger } from "../observability/recordingLogger.js";
 
 export interface SourceCitation {
   id: string;
@@ -58,6 +59,7 @@ export class SummaryService {
     transcript: SanitizedTranscriptPayload,
     refinement: string = "standard"
   ): AIAnalysisResult {
+    const startTime = Date.now();
     const segments = transcript.segments || [];
     const text = transcript.sanitizedText || segments.map((s) => s.text).join(" ");
     const words = text.trim().split(/\s+/).filter(Boolean);
@@ -67,7 +69,33 @@ export class SummaryService {
       ? transcript.detectedSpeakers
       : Array.from(new Set(segments.map((s) => s.speaker).filter(Boolean)));
 
+    recordingLogger.log({
+      event: "SUMMARY_STARTED",
+      timestamp: new Date(startTime).toISOString(),
+      userId: (transcript as any).userId || "user_workspace",
+      meetingId: transcript.meetingId,
+      recordingId: (transcript as any).recordingSessionId || `rec_${transcript.meetingId}`,
+      transcriptId: (transcript as any).transcriptId,
+      refinement,
+      wordCount,
+      segmentCount: segments.length,
+    });
+
     if (segments.length === 0 || wordCount < 6) {
+      recordingLogger.log({
+        event: "SUMMARY_COMPLETED",
+        timestamp: new Date().toISOString(),
+        userId: (transcript as any).userId || "user_workspace",
+        meetingId: transcript.meetingId,
+        recordingId: (transcript as any).recordingSessionId || `rec_${transcript.meetingId}`,
+        transcriptId: (transcript as any).transcriptId,
+        durationMs: Date.now() - startTime,
+        decisionCount: 0,
+        actionItemCount: 0,
+        questionCount: 0,
+        modelConfidence: "low",
+      });
+
       return {
         executiveSummary: "Transcript was too brief to extract meaningful decisions or action items.",
         decisions: [],
@@ -290,6 +318,20 @@ export class SummaryService {
         decisions.map((d) => `• ${d.text}`).join("\n") || "• Technical alignment established."
       }`;
     }
+
+    recordingLogger.log({
+      event: "SUMMARY_COMPLETED",
+      timestamp: new Date().toISOString(),
+      userId: (transcript as any).userId || "user_workspace",
+      meetingId: transcript.meetingId,
+      recordingId: (transcript as any).recordingSessionId || `rec_${transcript.meetingId}`,
+      transcriptId: (transcript as any).transcriptId,
+      durationMs: Date.now() - startTime,
+      decisionCount: decisions.length,
+      actionItemCount: actionItems.length,
+      questionCount: unresolvedQuestions.length,
+      modelConfidence: "high",
+    });
 
     return {
       executiveSummary,

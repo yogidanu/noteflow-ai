@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { EventEmitter } from "events";
 import { computeMeetingHash } from "../security/crypto.js";
+import { recordingLogger } from "../observability/recordingLogger.js";
 
 export type RecordingLifecycleStatus =
   | "INITIALIZING"
@@ -215,6 +216,16 @@ class RecordingSessionService extends EventEmitter {
       durationSeconds: session.durationSeconds,
     });
 
+    recordingLogger.log({
+      event: "RECORDING_STARTED",
+      timestamp: new Date(now).toISOString(),
+      userId: session.userId,
+      meetingId: session.meetingId,
+      recordingId: session.recordingSessionId,
+      calendarEventId: session.calendarEventId,
+      meetingUrl: session.meetingUrl,
+    });
+
     this.emitEvent(session, "RECORDING_STARTED");
     return session;
   }
@@ -254,6 +265,20 @@ class RecordingSessionService extends EventEmitter {
       chunkIndex: session.audioChunkCount,
       chunkBytes,
       totalAudioBytes: session.audioBytes,
+      durationSeconds: session.durationSeconds,
+    });
+
+    recordingLogger.log({
+      event: "AUDIO_SAVED",
+      timestamp: new Date().toISOString(),
+      userId: session.userId,
+      meetingId: session.meetingId,
+      recordingId: session.recordingSessionId,
+      calendarEventId: session.calendarEventId,
+      audioArtifactId: session.audioArtifactId || `art_${session.recordingSessionId}`,
+      audioArtifactPath: session.audioArtifactPath,
+      audioBytes: session.audioBytes,
+      audioFormat: "webm",
       durationSeconds: session.durationSeconds,
     });
 
@@ -329,6 +354,18 @@ class RecordingSessionService extends EventEmitter {
       audioChunkCount: session.audioChunkCount,
     });
 
+    recordingLogger.log({
+      event: "RECORDING_STOPPED",
+      timestamp: new Date(now).toISOString(),
+      userId: session.userId,
+      meetingId: session.meetingId,
+      recordingId: session.recordingSessionId,
+      calendarEventId: session.calendarEventId,
+      durationSeconds: session.durationSeconds,
+      audioChunkCount: session.audioChunkCount,
+      totalAudioBytes: session.audioBytes,
+    });
+
     this.emitEvent(session, "RECORDING_STOPPED");
     return session;
   }
@@ -349,6 +386,18 @@ class RecordingSessionService extends EventEmitter {
     const summaryId = `sum_${session.recordingSessionId}`;
     session.transcriptId = transcriptId;
     session.summaryId = summaryId;
+
+    recordingLogger.log({
+      event: "SYNC_STARTED",
+      timestamp: new Date().toISOString(),
+      userId: session.userId,
+      meetingId: session.meetingId,
+      recordingId: session.recordingSessionId,
+      calendarEventId: session.calendarEventId,
+      transcriptId,
+      summaryId,
+      targetSystem: "database",
+    });
 
     session.status = "COMPLETED";
     session.transcriptionStatus = "COMPLETED";
@@ -391,6 +440,19 @@ class RecordingSessionService extends EventEmitter {
       audioArtifactId: session.audioArtifactId,
     });
 
+    recordingLogger.log({
+      event: "SYNC_COMPLETED",
+      timestamp: new Date().toISOString(),
+      userId: session.userId,
+      meetingId: session.meetingId,
+      recordingId: session.recordingSessionId,
+      calendarEventId: session.calendarEventId,
+      transcriptId,
+      summaryId,
+      durationMs: Date.now() - (session.stoppedAt || session.createdAt),
+      syncedEntities: ["session", "transcript", "summary"],
+    });
+
     this.emitEvent(session, "SESSION_COMPLETED");
     return session;
   }
@@ -424,6 +486,18 @@ class RecordingSessionService extends EventEmitter {
     console.log("[RECORDING DEBUG] SESSION_FAILED", {
       recordingSessionId: session.recordingSessionId,
       status: "FAILED",
+      errorCode,
+      errorMessage,
+    });
+
+    recordingLogger.log({
+      event: "SYNC_FAILED",
+      timestamp: new Date().toISOString(),
+      userId: session.userId,
+      meetingId: session.meetingId,
+      recordingId: session.recordingSessionId,
+      calendarEventId: session.calendarEventId,
+      durationMs: 0,
       errorCode,
       errorMessage,
     });

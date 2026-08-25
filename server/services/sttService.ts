@@ -1,4 +1,5 @@
 import { config } from "../config.js";
+import { recordingLogger } from "../observability/recordingLogger.js";
 
 export interface DiarizedSegment {
   lineIndex: number;
@@ -76,6 +77,8 @@ export class SpeechToTextService {
    */
   public async processAudioStream(params: {
     meetingId: string;
+    userId?: string;
+    recordingId?: string;
     durationSeconds?: number;
     audioBuffer?: Buffer;
     mimeType?: string;
@@ -83,7 +86,9 @@ export class SpeechToTextService {
     sampleTranscriptPreset?: string;
     realTranscriptStream?: string;
   }): Promise<SanitizedTranscriptPayload> {
+    const startTime = Date.now();
     const deepgramKey = config.stt?.apiKey || process.env.DEEPGRAM_API_KEY;
+    const provider = deepgramKey && !deepgramKey.includes("sample") ? "deepgram" : params.realTranscriptStream ? "local_speech" : "fixture";
 
     // Validate audio buffer if provided
     if (params.audioBuffer) {
@@ -95,6 +100,17 @@ export class SpeechToTextService {
         hasContent: validation.hasContent,
       });
     }
+
+    recordingLogger.log({
+      event: "TRANSCRIPTION_STARTED",
+      timestamp: new Date(startTime).toISOString(),
+      userId: params.userId || "user_workspace",
+      meetingId: params.meetingId,
+      recordingId: params.recordingId || `rec_${params.meetingId}`,
+      provider,
+      audioBytes: params.audioBuffer?.length || 0,
+      mimeType: params.mimeType || "audio/webm",
+    });
 
     // 1. Live Deepgram Nova-2 STT Pipeline if API key and audio buffer are provided
     if (deepgramKey && !deepgramKey.includes("sample") && params.audioBuffer && params.audioBuffer.length > 0) {
@@ -142,10 +158,26 @@ export class SpeechToTextService {
             // Immediately purge audio buffer
             params.audioBuffer = undefined;
 
+            const sanitizedText = segments.map((s) => `${s.speaker} [${s.timestamp}]: ${s.text}`).join("\n");
+            const wordCount = sanitizedText.trim().split(/\s+/).filter(Boolean).length;
+
+            recordingLogger.log({
+              event: "TRANSCRIPTION_COMPLETED",
+              timestamp: new Date().toISOString(),
+              userId: params.userId || "user_workspace",
+              meetingId: params.meetingId,
+              recordingId: params.recordingId || `rec_${params.meetingId}`,
+              provider: "deepgram",
+              durationMs: Date.now() - startTime,
+              segmentCount: segments.length,
+              wordCount,
+              speakerCount: detectedSpeakersSet.size,
+            });
+
             return {
               meetingId: params.meetingId,
               rawVtt: segments.map((s) => `<v ${s.speaker}>${s.text}</v>`).join("\n"),
-              sanitizedText: segments.map((s) => `${s.speaker} [${s.timestamp}]: ${s.text}`).join("\n"),
+              sanitizedText,
               detectedSpeakers: Array.from(detectedSpeakersSet),
               durationSeconds: params.durationSeconds || 1800,
               segments,
@@ -154,6 +186,17 @@ export class SpeechToTextService {
         }
       } catch (err: any) {
         console.warn("[SpeechToTextService] Deepgram transcription fallback:", err.message);
+        recordingLogger.log({
+          event: "TRANSCRIPTION_FAILED",
+          timestamp: new Date().toISOString(),
+          userId: params.userId || "user_workspace",
+          meetingId: params.meetingId,
+          recordingId: params.recordingId || `rec_${params.meetingId}`,
+          provider: "deepgram",
+          durationMs: Date.now() - startTime,
+          errorCode: "DEEPGRAM_NETWORK_ERROR",
+          errorMessage: err.message,
+        });
       }
     }
 
@@ -164,6 +207,19 @@ export class SpeechToTextService {
     const rawTranscript = params.realTranscriptStream || params.sampleTranscriptPreset || "";
 
     if (!rawTranscript || rawTranscript.trim().length === 0) {
+      recordingLogger.log({
+        event: "TRANSCRIPTION_COMPLETED",
+        timestamp: new Date().toISOString(),
+        userId: params.userId || "user_workspace",
+        meetingId: params.meetingId,
+        recordingId: params.recordingId || `rec_${params.meetingId}`,
+        provider: "empty_audio",
+        durationMs: Date.now() - startTime,
+        segmentCount: 0,
+        wordCount: 0,
+        speakerCount: 0,
+      });
+
       return {
         meetingId: params.meetingId,
         rawVtt: "",
@@ -229,10 +285,26 @@ export class SpeechToTextService {
       }
     }
 
+    const sanitizedText = segments.map((s) => `${s.speaker} [${s.timestamp}]: ${s.text}`).join("\n");
+    const wordCount = sanitizedText.trim().split(/\s+/).filter(Boolean).length;
+
+    recordingLogger.log({
+      event: "TRANSCRIPTION_COMPLETED",
+      timestamp: new Date().toISOString(),
+      userId: params.userId || "user_workspace",
+      meetingId: params.meetingId,
+      recordingId: params.recordingId || `rec_${params.meetingId}`,
+      provider,
+      durationMs: Date.now() - startTime,
+      segmentCount: segments.length,
+      wordCount,
+      speakerCount: detectedSpeakersSet.size,
+    });
+
     return {
       meetingId: params.meetingId,
       rawVtt: rawTranscript,
-      sanitizedText: segments.map((s) => `${s.speaker} [${s.timestamp}]: ${s.text}`).join("\n"),
+      sanitizedText,
       detectedSpeakers: Array.from(detectedSpeakersSet),
       durationSeconds: params.durationSeconds || 1800,
       segments,
