@@ -1,7 +1,6 @@
 import { DetectedMeeting, CalendarConnectionState, AIAnalysisResult } from "../types/meeting";
 import { UserProfile } from "../hooks/useAuth";
-
-const API_BASE = (import.meta as any).env?.VITE_API_URL || "http://localhost:4000/api";
+import { API_BASE_URL, getApiEndpoint } from "../config/appConfig";
 
 export class MeetRecordApiClient {
   private isBackendAvailable: boolean | null = null;
@@ -9,12 +8,12 @@ export class MeetRecordApiClient {
   private async checkAvailability(): Promise<boolean> {
     if (this.isBackendAvailable !== null) return this.isBackendAvailable;
     try {
-      const healthUrl = API_BASE.endsWith("/api") ? `${API_BASE.slice(0, -4)}/health` : `${API_BASE}/health`;
+      const healthUrl = API_BASE_URL.endsWith("/api") ? `${API_BASE_URL.slice(0, -4)}/health` : `${API_BASE_URL}/health`;
       const res = await fetch(healthUrl, { method: "GET", signal: AbortSignal.timeout(1500) });
       this.isBackendAvailable = res.ok;
     } catch {
       try {
-        const res2 = await fetch(`${API_BASE}/health`, { method: "GET", signal: AbortSignal.timeout(1500) });
+        const res2 = await fetch(`${API_BASE_URL}/health`, { method: "GET", signal: AbortSignal.timeout(1500) });
         this.isBackendAvailable = res2.ok;
       } catch {
         this.isBackendAvailable = false;
@@ -31,7 +30,8 @@ export class MeetRecordApiClient {
       const available = await this.checkAvailability();
       if (!available) return null;
 
-      const url = redirectUri ? `${API_BASE}/auth/google/url?redirectUri=${encodeURIComponent(redirectUri)}` : `${API_BASE}/auth/google/url`;
+      const endpoint = getApiEndpoint("/auth/google/url");
+      const url = redirectUri ? `${endpoint}?redirectUri=${encodeURIComponent(redirectUri)}` : endpoint;
       const res = await fetch(url);
       if (!res.ok) return null;
 
@@ -80,7 +80,7 @@ export class MeetRecordApiClient {
         return null;
       }
 
-      const res = await fetch(`${API_BASE}/auth/google/exchange`, {
+      const res = await fetch(getApiEndpoint("/auth/google/exchange"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(params),
@@ -116,7 +116,7 @@ export class MeetRecordApiClient {
       const headers: Record<string, string> = {};
       if (userId) headers["x-user-id"] = userId;
 
-      const res = await fetch(`${API_BASE}/auth/session`, { headers });
+      const res = await fetch(getApiEndpoint("/auth/session"), { headers });
       if (!res.ok) return null;
 
       const json = await res.json();
@@ -144,7 +144,7 @@ export class MeetRecordApiClient {
       const headers: Record<string, string> = {};
       if (userId) headers["x-user-id"] = userId;
 
-      const res = await fetch(`${API_BASE}/auth/logout`, { method: "POST", headers });
+      const res = await fetch(getApiEndpoint("/auth/logout"), { method: "POST", headers });
       return res.ok;
     } catch (e) {
       console.warn("[ApiClient] Logout error", e);
@@ -160,7 +160,7 @@ export class MeetRecordApiClient {
       const available = await this.checkAvailability();
       if (!available) return true;
 
-      const res = await fetch(`${API_BASE}/auth/google/exchange`, {
+      const res = await fetch(getApiEndpoint("/auth/google/exchange"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, name: name || email.split("@")[0] }),
@@ -184,7 +184,7 @@ export class MeetRecordApiClient {
       const available = await this.checkAvailability();
       if (!available) return null;
 
-      const res = await fetch(`${API_BASE}/calendar/events`);
+      const res = await fetch(getApiEndpoint("/calendar/events"));
       if (!res.ok) return null;
 
       const json = await res.json();
@@ -209,7 +209,7 @@ export class MeetRecordApiClient {
       const available = await this.checkAvailability();
       if (!available) return null;
 
-      const res = await fetch(`${API_BASE}/calendar/sync`, { method: "POST" });
+      const res = await fetch(getApiEndpoint("/calendar/sync"), { method: "POST" });
       if (!res.ok) return null;
 
       const json = await res.json();
@@ -233,7 +233,7 @@ export class MeetRecordApiClient {
       const available = await this.checkAvailability();
       if (!available) return true;
 
-      const res = await fetch(`${API_BASE}/recording/start`, {
+      const res = await fetch(getApiEndpoint("/recording/start"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ dedupHash, meetingUrl }),
@@ -253,7 +253,7 @@ export class MeetRecordApiClient {
       const available = await this.checkAvailability();
       if (!available) return null;
 
-      const res = await fetch(`${API_BASE}/recording/stop`, {
+      const res = await fetch(getApiEndpoint("/recording/stop"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ dedupHash }),
@@ -282,7 +282,7 @@ export class MeetRecordApiClient {
     onVadLevel: (level: number, duration: number) => void
   ): () => void {
     try {
-      const eventSource = new EventSource(`${API_BASE}/recording/events`);
+      const eventSource = new EventSource(getApiEndpoint("/recording/events"));
 
       eventSource.onmessage = (msg) => {
         try {

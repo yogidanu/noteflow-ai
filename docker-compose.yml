@@ -12,7 +12,8 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=4000
-      - CORS_ORIGIN=http://localhost:5173,http://localhost:5174,https://app.noteflow.ai
+      - FRONTEND_URL=https://noteflow-ai-cc3p.vercel.app
+      - CORS_ORIGIN=http://localhost:5173,http://localhost:5174,http://localhost:3000,https://noteflow-ai-cc3p.vercel.app,https://app.noteflow.ai
       - TOKEN_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
       - SESSION_SECRET=noteflow-meet-record-production-session-secret-2026
       - DATABASE_URL=postgresql://noteflow_user:noteflow_secret_password@postgres:5432/noteflow_db

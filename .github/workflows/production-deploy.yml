@@ -86,7 +86,7 @@ jobs:
 
       - name: Verify Production Health Probe (Optional Smoke Test)
         env:
-          API_URL: ${{ secrets.PRODUCTION_API_URL || 'https://api.noteflow.ai' }}
+          API_URL: ${{ secrets.PRODUCTION_API_URL || 'https://noteflow-ai-3nal.onrender.com' }}
         run: |
           echo "Waiting 20 seconds for Render rolling deployment..."
           sleep 20

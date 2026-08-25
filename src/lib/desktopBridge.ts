@@ -4,6 +4,7 @@
  */
 
 import { DesktopAPI, DesktopAuthSession } from "../../desktop/types/desktop";
+import { APP_URL } from "../config/appConfig";
 
 export const isDesktopApp = (): boolean => {
   return typeof window !== "undefined" && typeof window.noteFlowDesktop !== "undefined";
@@ -21,7 +22,8 @@ export const openInWebApp = async (route = "/"): Promise<void> => {
   if (desktop) {
     await desktop.openWebApp(route);
   } else {
-    window.open(`https://app.noteflow.ai${route}`, "_blank");
+    const cleanRoute = route.startsWith("/") ? route : `/${route}`;
+    window.open(`${APP_URL}${cleanRoute}`, "_blank");
   }
 };
 

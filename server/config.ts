@@ -3,26 +3,64 @@ dotenv.config();
 
 const isProduction = process.env.NODE_ENV === "production";
 
+// Frontend Web Application Base URL
+const frontendUrl =
+  process.env.FRONTEND_URL ||
+  process.env.VITE_APP_URL ||
+  (isProduction ? "https://noteflow-ai-cc3p.vercel.app" : "http://localhost:5173");
+
 // Parse and validate CORS origins
-const rawCorsOrigin = process.env.CORS_ORIGIN || "http://localhost:5173,http://localhost:5174,http://localhost:3000";
+const rawCorsOrigin =
+  process.env.CORS_ORIGIN ||
+  "http://localhost:5173,http://localhost:5174,http://localhost:3000,https://noteflow-ai-cc3p.vercel.app,https://app.noteflow.ai";
+
 const parsedCorsOrigins = rawCorsOrigin
   .split(",")
   .map((o) => o.trim())
   .filter(Boolean);
 
-if (!parsedCorsOrigins.includes("https://app.noteflow.ai")) {
-  parsedCorsOrigins.push("https://app.noteflow.ai");
-}
+// Always ensure the configured frontend URL and standard production domains are allowed
+[frontendUrl, "https://noteflow-ai-cc3p.vercel.app", "https://app.noteflow.ai"].forEach((origin) => {
+  if (origin && !parsedCorsOrigins.includes(origin)) {
+    parsedCorsOrigins.push(origin);
+  }
+});
 
 // Strict check: Never allow wildcard in production
 if (isProduction && parsedCorsOrigins.includes("*")) {
   throw new Error("[Security Error] Wildcard CORS (*) is strictly prohibited in production mode.");
 }
 
+// Google OAuth 2.0 Callback / Redirect URI
+const googleRedirectUri =
+  process.env.GOOGLE_CALLBACK_URL ||
+  process.env.GOOGLE_REDIRECT_URI ||
+  (isProduction
+    ? "https://noteflow-ai-3nal.onrender.com/api/auth/google/callback"
+    : "http://localhost:4000/api/auth/google/callback");
+
+// Build allowed redirect URIs dynamically
+const allowedRedirectUris = [
+  "noteflow://auth/callback",
+  `${frontendUrl}/auth/callback`,
+  `${frontendUrl}/auth/desktop-login`,
+  "https://noteflow-ai-cc3p.vercel.app/auth/callback",
+  "https://noteflow-ai-cc3p.vercel.app/auth/desktop-login",
+  "https://app.noteflow.ai/auth/callback",
+  "https://app.noteflow.ai/auth/desktop-login",
+  "http://localhost:5173/auth/desktop-login",
+  "http://localhost:5173/auth/callback",
+  "http://localhost:4000/api/auth/google/callback",
+  "http://localhost:3001/api/auth/google/callback",
+  "https://noteflow-ai-3nal.onrender.com/api/auth/google/callback",
+  "https://api.noteflow.ai/api/auth/google/callback",
+];
+
 export const config = {
   port: parseInt(process.env.PORT || "4000", 10),
   nodeEnv: process.env.NODE_ENV || "development",
   isProduction,
+  frontendUrl,
   corsOrigins: parsedCorsOrigins,
   corsOrigin: rawCorsOrigin,
 
@@ -39,11 +77,7 @@ export const config = {
   google: {
     clientId: process.env.GOOGLE_CLIENT_ID || "noteflow-google-client-id-sample.apps.googleusercontent.com",
     clientSecret: process.env.GOOGLE_CLIENT_SECRET || "GOCSPX-sample-client-secret-key",
-    redirectUri:
-      process.env.GOOGLE_REDIRECT_URI ||
-      (isProduction
-        ? "https://api.noteflow.ai/api/auth/google/callback"
-        : "http://localhost:4000/api/auth/google/callback"),
+    redirectUri: googleRedirectUri,
     scopes: [
       "https://www.googleapis.com/auth/calendar.events.readonly",
       "https://www.googleapis.com/auth/userinfo.email",
@@ -52,18 +86,7 @@ export const config = {
   },
 
   // Allowed OAuth Callback Redirect URIs
-  allowedRedirectUris: [
-    "noteflow://auth/callback",
-    "https://app.noteflow.ai/auth/callback",
-    "https://app.noteflow.ai/auth/desktop-login",
-    "https://noteflow-ai-cc3p.vercel.app/auth/callback",
-    "https://noteflow-ai-cc3p.vercel.app/auth/desktop-login",
-    "http://localhost:5173/auth/desktop-login",
-    "http://localhost:5173/auth/callback",
-    "http://localhost:4000/api/auth/google/callback",
-    "http://localhost:3001/api/auth/google/callback",
-    "https://api.noteflow.ai/api/auth/google/callback",
-  ],
+  allowedRedirectUris: Array.from(new Set(allowedRedirectUris)),
 
   // STT Ingress Provider (Deepgram / Whisper)
   stt: {

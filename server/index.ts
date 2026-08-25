@@ -80,7 +80,7 @@ app.get("/auth/desktop-login", (req: Request, res: Response) => {
   const redirectUri = (req.query.redirect_uri as string) || "noteflow://auth/callback";
 
   res.redirect(
-    `http://localhost:5173/auth/desktop-login?code_challenge=${encodeURIComponent(codeChallenge)}&code_challenge_method=${encodeURIComponent(codeChallengeMethod)}&state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(redirectUri)}`
+    `${config.frontendUrl}/auth/desktop-login?code_challenge=${encodeURIComponent(codeChallenge)}&code_challenge_method=${encodeURIComponent(codeChallengeMethod)}&state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(redirectUri)}`
   );
 });
 

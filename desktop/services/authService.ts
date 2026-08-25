@@ -43,20 +43,26 @@ export class AuthService {
 
   /**
    * Resolves the environment configuration without hardcoding production URLs.
-   * Development: http://localhost:4000
-   * Production: https://app.noteflow.ai
+   * Development: http://localhost:5173 / http://localhost:4000
+   * Staging / Current Testing: https://noteflow-ai-cc3p.vercel.app / https://noteflow-ai-3nal.onrender.com/api
+   * Future Custom Domain Production: https://app.noteflow.ai / https://api.noteflow.ai/api
    */
   public static getEnvironment(): EnvironmentInfo {
     const isProd = app ? app.isPackaged : process.env.NODE_ENV === "production";
     
-    // Allow environment variable override for custom deployments / testing
+    // Web App URL for browser authentication landing page
     const baseUrl =
       process.env.NOTEFLOW_AUTH_BASE_URL ||
-      (isProd ? "https://app.noteflow.ai" : "http://localhost:4000");
+      process.env.VITE_APP_URL ||
+      (isProd ? "https://noteflow-ai-cc3p.vercel.app" : "http://localhost:5173");
 
-    const apiBaseUrl =
+    // Backend API Base URL
+    const rawApiUrl =
       process.env.NOTEFLOW_API_BASE_URL ||
-      (isProd ? "https://api.noteflow.ai/api" : "http://localhost:4000/api");
+      process.env.VITE_API_URL ||
+      (isProd ? "https://noteflow-ai-3nal.onrender.com/api" : "http://localhost:4000/api");
+
+    const apiBaseUrl = rawApiUrl.replace(/\/+$/, "");
 
     return {
       isProduction: isProd,

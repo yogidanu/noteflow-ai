@@ -23,15 +23,16 @@ async function runDesktopAuthConfigTests() {
   // -------------------------------------------------------------
   try {
     delete process.env.NOTEFLOW_AUTH_BASE_URL;
+    delete process.env.VITE_APP_URL;
     process.env.NODE_ENV = "development";
 
     const devEnv = AuthService.getEnvironment();
 
-    if (devEnv.baseUrl === "http://localhost:4000" && devEnv.environmentName === "development") {
+    if ((devEnv.baseUrl === "http://localhost:5173" || devEnv.baseUrl === "http://localhost:4000") && devEnv.environmentName === "development") {
       results.push({
         id: 1,
         testCase: "Development Environment Base URL Resolution",
-        expectedResult: "Resolves to http://localhost:4000 when in development mode.",
+        expectedResult: "Resolves to http://localhost:5173 / http://localhost:4000 when in development mode.",
         actualResult: `Resolved Base URL: ${devEnv.baseUrl} (Env: ${devEnv.environmentName}).`,
         status: "PASS",
         severity: "CRITICAL",
@@ -44,7 +45,7 @@ async function runDesktopAuthConfigTests() {
     results.push({
       id: 1,
       testCase: "Development Environment Base URL Resolution",
-      expectedResult: "http://localhost:4000 in dev",
+      expectedResult: "http://localhost:5173 in dev",
       actualResult: err.message,
       status: "FAIL",
       severity: "CRITICAL",
@@ -53,32 +54,47 @@ async function runDesktopAuthConfigTests() {
   }
 
   // -------------------------------------------------------------
-  // Test 2: Production Environment URL Resolution
+  // Test 2: Production Environment & Custom Domain Override Resolution
   // -------------------------------------------------------------
   try {
     process.env.NODE_ENV = "production";
     delete process.env.NOTEFLOW_AUTH_BASE_URL;
+    delete process.env.VITE_APP_URL;
 
     const prodEnv = AuthService.getEnvironment();
 
-    if (prodEnv.baseUrl === "https://app.noteflow.ai" && prodEnv.environmentName === "production") {
+    // Verify default production test URL (Vercel)
+    const isVercelDefault = prodEnv.baseUrl === "https://noteflow-ai-cc3p.vercel.app";
+
+    // Verify custom domain override (Future production)
+    process.env.NOTEFLOW_AUTH_BASE_URL = "https://app.noteflow.ai";
+    process.env.NOTEFLOW_API_BASE_URL = "https://api.noteflow.ai/api";
+    const customDomainEnv = AuthService.getEnvironment();
+    const isCustomDomainSupported =
+      customDomainEnv.baseUrl === "https://app.noteflow.ai" &&
+      customDomainEnv.apiBaseUrl === "https://api.noteflow.ai/api";
+
+    delete process.env.NOTEFLOW_AUTH_BASE_URL;
+    delete process.env.NOTEFLOW_API_BASE_URL;
+
+    if (isVercelDefault && isCustomDomainSupported) {
       results.push({
         id: 2,
-        testCase: "Production Environment Base URL Resolution",
-        expectedResult: "Resolves to https://app.noteflow.ai when in production mode.",
-        actualResult: `Resolved Base URL: ${prodEnv.baseUrl} (Env: ${prodEnv.environmentName}).`,
+        testCase: "Production Environment & Custom Domain Override Resolution",
+        expectedResult: "Defaults to Vercel and supports seamless custom domain override via environment variables.",
+        actualResult: `Default: ${prodEnv.baseUrl}, Override: ${customDomainEnv.baseUrl}.`,
         status: "PASS",
         severity: "CRITICAL",
-        evidence: `BaseUrl: ${prodEnv.baseUrl}, ApiBaseUrl: ${prodEnv.apiBaseUrl}.`,
+        evidence: `Default BaseUrl: ${prodEnv.baseUrl}, Custom Domain BaseUrl: ${customDomainEnv.baseUrl}.`,
       });
     } else {
-      throw new Error(`Unexpected production URL: ${prodEnv.baseUrl}`);
+      throw new Error(`Production resolution check failed: Default=${prodEnv.baseUrl}, Custom=${customDomainEnv.baseUrl}`);
     }
   } catch (err: any) {
     results.push({
       id: 2,
-      testCase: "Production Environment Base URL Resolution",
-      expectedResult: "https://app.noteflow.ai in prod",
+      testCase: "Production Environment & Custom Domain Override Resolution",
+      expectedResult: "Vercel default with custom domain support",
       actualResult: err.message,
       status: "FAIL",
       severity: "CRITICAL",
