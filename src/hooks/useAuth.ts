@@ -256,29 +256,14 @@ export function useAuth() {
           }, 600);
 
           return null;
+        } else {
+          // If popup is blocked by browser, navigate full window to Google auth URL
+          window.location.href = authData.authUrl;
+          return null;
         }
       }
 
-      // 3. Fallback / Direct Exchange handler (when popup blocked or in mock/offline mode)
-      const targetEmail = fallbackEmail || "user@workspace.internal";
-      const targetName = fallbackName || (targetEmail.includes("@") ? targetEmail.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) : "Workspace Member");
-
-      const exchangeResult = await apiClient.exchangeGoogleAuth({
-        email: targetEmail,
-        name: targetName,
-      });
-
-      if (exchangeResult && exchangeResult.user) {
-        setUser(exchangeResult.user);
-        setIsDemoMode(false);
-        setIsOnboardingComplete(false);
-        setAuthError(null);
-        authLockRef.current = false;
-        setIsAuthenticating(false);
-        return exchangeResult.user;
-      } else {
-        throw new Error("Failed to verify Google Workspace session.");
-      }
+      throw new Error("Unable to initialize Google sign-in. Please try again.");
     } catch (err: any) {
       console.error("[useAuth] Google authentication error:", err);
       const isCancelled = err?.message?.toLowerCase().includes("cancel") || err?.message?.toLowerCase().includes("closed");

@@ -206,9 +206,9 @@ export class AuthService {
         if (exchangeRes.ok) {
           const data = await exchangeRes.json();
           const session: DesktopAuthSession = {
-            userId: data.session?.userId || `user-${crypto.randomBytes(6).toString("hex")}`,
-            email: data.session?.email || email,
-            name: data.session?.name || name,
+            userId: data.user?.id || data.session?.userId || `usr_${crypto.createHash("sha256").update(email.toLowerCase().trim()).digest("hex").substring(0, 16)}`,
+            email: data.user?.email || data.session?.email || email,
+            name: data.user?.displayName || data.user?.name || data.session?.displayName || data.session?.name || name,
             accessToken: data.session?.accessToken || `jwt_desktop_${crypto.randomBytes(16).toString("hex")}`,
             expiresAt: data.session?.expiresAt || Date.now() + 30 * 24 * 60 * 60 * 1000,
             scopes: data.session?.scopes || ["calendar.events.readonly", "meet.recording.ingress"],
@@ -233,7 +233,7 @@ export class AuthService {
 
       // Safe local fallback session creation (zero plain secrets)
       const session: DesktopAuthSession = {
-        userId: `user-${crypto.createHash("sha256").update(email).digest("hex").substring(0, 12)}`,
+        userId: `usr_${crypto.createHash("sha256").update(email.toLowerCase().trim()).digest("hex").substring(0, 16)}`,
         email,
         name,
         accessToken: `jwt_desktop_${crypto.randomBytes(16).toString("hex")}`,

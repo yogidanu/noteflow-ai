@@ -38,76 +38,19 @@ export const DesktopLoginScreen: React.FC<DesktopLoginScreenProps> = ({ onSucces
     setErrorMessage(null);
 
     try {
-      // 1. Request official Google OAuth authorization URL with CSRF state
+      // 1. Request official Google OAuth authorization URL with PKCE & CSRF state
       const authData = await apiClient.getGoogleAuthUrl(redirectUri, "auth", codeChallenge, codeChallengeMethod);
 
       if (authData && authData.authUrl) {
-        // Open Google OAuth popup window
-        const width = 500;
-        const height = 600;
-        const left = window.screenX + (window.outerWidth - width) / 2;
-        const top = window.screenY + (window.outerHeight - height) / 2.5;
-
-        const popup = window.open(
-          authData.authUrl,
-          "NoteFlow Google Auth",
-          `width=${width},height=${height},left=${left},top=${top},status=no,resizable=yes`
-        );
-
-        if (popup) {
-          const pollTimer = window.setInterval(async () => {
-            if (popup.closed) {
-              window.clearInterval(pollTimer);
-              // Check if completed or cancelled
-              if (status !== "success") {
-                // If popup closed without callback, trigger verification exchange
-                finalizeAuthentication();
-              }
-            }
-          }, 800);
-        } else {
-          // If popup blocker intervened, fallback to direct exchange
-          await finalizeAuthentication();
-        }
+        // Direct browser navigation to Google OAuth endpoint (Google will redirect to backend callback and deep link)
+        window.location.href = authData.authUrl;
       } else {
-        // Direct exchange fallback
-        await finalizeAuthentication();
+        throw new Error("Unable to obtain Google sign-in URL from server.");
       }
     } catch (err: any) {
       console.error("[DesktopLogin] Auth error:", err);
       const isCancelled = err?.message?.toLowerCase().includes("cancel") || err?.message?.toLowerCase().includes("closed");
       setErrorMessage(isCancelled ? "Google sign-in was cancelled." : err?.message || "Authentication failed. Please try again.");
-      setStatus("error");
-    }
-  };
-
-  const finalizeAuthentication = async () => {
-    try {
-      // Generate authentic code token representing this desktop authorization session
-      const authCode = `auth_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
-      const userEmail = "sarah.chen@acme-corp.com";
-      const userName = "Sarah Chen";
-
-      // Register session with backend
-      await apiClient.exchangeGoogleAuth({
-        code: authCode,
-        state: stateNonce,
-        email: userEmail,
-        name: userName,
-      });
-
-      setAuthenticatedUserEmail(userEmail);
-
-      // Build target noteflow:// deep-link URL
-      const callbackTarget = `${redirectUri}?code=${encodeURIComponent(authCode)}&state=${encodeURIComponent(stateNonce)}&email=${encodeURIComponent(userEmail)}&name=${encodeURIComponent(userName)}`;
-      setDeepLinkUrl(callbackTarget);
-      setStatus("success");
-
-      if (onSuccess) {
-        onSuccess(authCode, callbackTarget);
-      }
-    } catch (e: any) {
-      setErrorMessage("Failed to establish desktop session. Please retry.");
       setStatus("error");
     }
   };
