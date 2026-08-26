@@ -370,13 +370,40 @@ export function useAuth() {
           );
 
           if (popup) {
-            const pollTimer = window.setInterval(() => {
-              if (popup.closed) {
-                window.clearInterval(pollTimer);
-                authLockRef.current = false;
-                setIsAuthenticating(false);
+            let authCompleted = false;
+            let pollTimer: number | null = null;
+
+            const messageHandler = (evt: MessageEvent) => {
+              if (evt.data?.type === "NOTEFLOW_AUTH_SUCCESS" || evt.data?.type === "NOTEFLOW_AUTH_ERROR") {
+                authCompleted = true;
+                if (pollTimer) window.clearInterval(pollTimer);
+                window.removeEventListener("message", messageHandler);
               }
-            }, 600);
+            };
+            window.addEventListener("message", messageHandler);
+
+            pollTimer = window.setInterval(() => {
+              try {
+                if (authCompleted || popup.closed) {
+                  if (pollTimer) window.clearInterval(pollTimer);
+                  window.removeEventListener("message", messageHandler);
+                  authLockRef.current = false;
+                  setIsAuthenticating(false);
+                }
+              } catch {
+                // Cross-Origin-Opener-Policy blocks window.closed inspection; stop polling to avoid console spam
+                if (pollTimer) window.clearInterval(pollTimer);
+                window.removeEventListener("message", messageHandler);
+              }
+            }, 800);
+
+            // Safety timeout: stop waiting after 3 minutes
+            window.setTimeout(() => {
+              if (pollTimer) window.clearInterval(pollTimer);
+              window.removeEventListener("message", messageHandler);
+              authLockRef.current = false;
+              setIsAuthenticating(false);
+            }, 180000);
 
             return null;
           } else {
