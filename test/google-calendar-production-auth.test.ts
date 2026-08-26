@@ -195,16 +195,17 @@ async function main() {
     assert(Boolean(recovered), "Recovered calendar must return events");
   });
 
-  // Test 11: Exact Production Flow Simulation for usr_7fa1f18622b7487c
-  const prodUserId = "usr_7fa1f18622b7487c";
-  const prodUserEmail = "user@workspace.design";
+  // Test 11: Exact Production Flow Simulation for Canonical Google User
+  const prodUserId = "usr_g_7fa1f18622b7487c";
+  const prodUserEmail = "yogesh.danu@company.com";
 
   runTest("Production Lifecycle [Step 1]: Identity login creates session with OpenID scopes only", () => {
     tokenVault.saveTokens({
       userId: prodUserId,
+      googleSubjectId: "google_sub_1092837465",
       email: prodUserEmail,
-      name: "User",
-      displayName: "User",
+      name: "Yogesh Danu",
+      displayName: "Yogesh Danu",
       accessToken: "ya29.prod_identity_token",
       refreshToken: "1//refresh_prod_identity",
       expiresInSeconds: 3600,
@@ -237,9 +238,10 @@ async function main() {
     const existing = tokenVault.getSafeSession(prodUserId);
     tokenVault.saveTokens({
       userId: prodUserId,
+      googleSubjectId: "google_sub_1092837465",
       email: prodUserEmail,
-      name: "User",
-      displayName: "User",
+      name: "Yogesh Danu",
+      displayName: "Yogesh Danu",
       accessToken: "ya29.prod_calendar_token",
       refreshToken: "1//refresh_prod_calendar",
       expiresInSeconds: 3600,

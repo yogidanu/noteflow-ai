@@ -29,6 +29,12 @@ export function useAuth() {
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed && parsed.id) {
+          // Purge contaminated legacy dummy sessions
+          if (parsed.email === "user@workspace.design" || parsed.id === "usr_7fa1f18622b7487c") {
+            console.warn("[useAuth] Purged contaminated dummy session from localStorage");
+            localStorage.removeItem(AUTH_STORAGE_KEY);
+            return null;
+          }
           apiClient.setSessionContext(parsed.id, parsed.email, parsed.name);
           return parsed;
         }
@@ -119,7 +125,13 @@ export function useAuth() {
     const cbLastName = params.get("lastName");
 
     if (cbError) {
-      setAuthError(cbError === "access_denied" ? "Google sign-in was cancelled." : `Authentication error: ${cbError}`);
+      const errorMap: Record<string, string> = {
+        access_denied: "Google sign-in was cancelled.",
+        GOOGLE_AUTH_EXCHANGE_FAILED: "Google sign-in could not be verified by the server. Please try signing in again.",
+        INVALID_OR_EXPIRED_STATE: "The authentication session expired. Please sign in again.",
+        MISSING_AUTHORIZATION_CODE: "Google authorization code was missing. Please try again.",
+      };
+      setAuthError(errorMap[cbError] || `Authentication error: ${cbError}`);
       window.history.replaceState({}, document.title, window.location.pathname);
       return;
     }
