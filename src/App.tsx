@@ -56,7 +56,7 @@ export function App() {
     deleteMeeting,
     resetToSamples,
     clearAllMeetings,
-  } = useMeetings(isDemoMode);
+  } = useMeetings(isDemoMode, user?.id);
 
   // AI Summarizer State
   const {
