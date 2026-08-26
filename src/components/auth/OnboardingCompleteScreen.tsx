@@ -13,7 +13,7 @@ export const OnboardingCompleteScreen: React.FC<OnboardingCompleteScreenProps> =
   accountEmail,
   onGoToDashboard,
 }) => {
-  const displayEmail = accountEmail || user?.email || "";
+  const displayEmail = accountEmail || user?.email || "user@workspace.design";
 
   return (
     <main

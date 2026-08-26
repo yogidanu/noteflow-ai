@@ -2,21 +2,13 @@ import { useState, useEffect, useCallback } from "react";
 import { MeetingNote } from "../types/meeting";
 import { INITIAL_SAMPLE_MEETINGS } from "../lib/sampleData";
 
-function getNotesStorageKey(userId?: string | null): string {
-  return userId ? `noteflow:notes:${userId}` : "noteflow_demo_meetings";
-}
+const STORAGE_KEY = "noteflow_meetings_v1";
+const ACTIVE_ID_KEY = "noteflow_active_meeting_id";
 
-function getActiveIdStorageKey(userId?: string | null): string {
-  return userId ? `noteflow:active_meeting:${userId}` : "noteflow_active_meeting_id";
-}
-
-export function useMeetings(isDemoMode = false, userId?: string | null) {
-  const notesKey = getNotesStorageKey(userId);
-  const activeIdKey = getActiveIdStorageKey(userId);
-
+export function useMeetings(isDemoMode = false) {
   const [meetings, setMeetings] = useState<MeetingNote[]>(() => {
     try {
-      const saved = localStorage.getItem(notesKey);
+      const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
         return JSON.parse(saved);
       }
@@ -29,7 +21,7 @@ export function useMeetings(isDemoMode = false, userId?: string | null) {
 
   const [activeMeetingId, setActiveMeetingId] = useState<string | null>(() => {
     try {
-      const savedId = localStorage.getItem(activeIdKey);
+      const savedId = localStorage.getItem(ACTIVE_ID_KEY);
       if (savedId) return savedId;
     } catch (e) {
       console.error("Failed to read active meeting id", e);
@@ -37,45 +29,26 @@ export function useMeetings(isDemoMode = false, userId?: string | null) {
     return isDemoMode ? INITIAL_SAMPLE_MEETINGS[0]?.id || null : null;
   });
 
-  // Switch notes state when userId changes
-  useEffect(() => {
-    try {
-      const currentKey = getNotesStorageKey(userId);
-      const saved = localStorage.getItem(currentKey);
-      if (saved) {
-        setMeetings(JSON.parse(saved));
-      } else {
-        setMeetings(isDemoMode ? INITIAL_SAMPLE_MEETINGS : []);
-      }
-
-      const curActiveKey = getActiveIdStorageKey(userId);
-      const savedId = localStorage.getItem(curActiveKey);
-      setActiveMeetingId(savedId || (isDemoMode ? INITIAL_SAMPLE_MEETINGS[0]?.id || null : null));
-    } catch (e) {
-      console.error("Failed to reload user notes", e);
-    }
-  }, [userId, isDemoMode]);
-
   // Sync to localStorage
   useEffect(() => {
     try {
-      localStorage.setItem(notesKey, JSON.stringify(meetings));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(meetings));
     } catch (e) {
       console.error("Failed to save meetings to storage", e);
     }
-  }, [meetings, notesKey]);
+  }, [meetings]);
 
   useEffect(() => {
     if (activeMeetingId) {
       try {
-        localStorage.setItem(activeIdKey, activeMeetingId);
+        localStorage.setItem(ACTIVE_ID_KEY, activeMeetingId);
       } catch (e) {
         console.error("Failed to save active id", e);
       }
     } else {
-      localStorage.removeItem(activeIdKey);
+      localStorage.removeItem(ACTIVE_ID_KEY);
     }
-  }, [activeMeetingId, activeIdKey]);
+  }, [activeMeetingId]);
 
   const activeMeeting = meetings.find((m) => m.id === activeMeetingId) || null;
 
@@ -134,14 +107,12 @@ export function useMeetings(isDemoMode = false, userId?: string | null) {
     setMeetings([]);
     setActiveMeetingId(null);
     try {
-      localStorage.removeItem(notesKey);
-      localStorage.removeItem(activeIdKey);
-      localStorage.removeItem("noteflow_meetings_v1");
-      localStorage.removeItem("noteflow_active_meeting_id");
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(ACTIVE_ID_KEY);
     } catch (e) {
       console.error("Failed to clear meetings storage", e);
     }
-  }, [notesKey, activeIdKey]);
+  }, []);
 
   return {
     meetings,

@@ -8,26 +8,6 @@ export class MeetRecordApiClient {
   private currentUserEmail: string | null = null;
   private currentUserName: string | null = null;
 
-  constructor() {
-    this.hydrateFromStorage();
-  }
-
-  private hydrateFromStorage(): void {
-    if (typeof window !== "undefined") {
-      try {
-        const saved = localStorage.getItem("noteflow_auth_session_v1");
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (parsed && parsed.id) {
-            this.currentUserId = parsed.id;
-            this.currentUserEmail = parsed.email || null;
-            this.currentUserName = parsed.name || null;
-          }
-        }
-      } catch {}
-    }
-  }
-
   public setSessionContext(userId?: string | null, email?: string | null, name?: string | null): void {
     this.currentUserId = userId || null;
     this.currentUserEmail = email || null;
@@ -35,9 +15,6 @@ export class MeetRecordApiClient {
   }
 
   private getAuthHeaders(customHeaders: Record<string, string> = {}): Record<string, string> {
-    if (!this.currentUserId) {
-      this.hydrateFromStorage();
-    }
     const headers: Record<string, string> = { ...customHeaders };
     if (this.currentUserId) headers["x-user-id"] = this.currentUserId;
     if (this.currentUserEmail) headers["x-user-email"] = this.currentUserEmail;
@@ -646,16 +623,7 @@ export class MeetRecordApiClient {
     onVadLevel: (level: number, duration: number) => void
   ): () => void {
     try {
-      if (!this.currentUserId) {
-        this.hydrateFromStorage();
-      }
-      const rawUrl = getApiEndpoint("/recording/events");
-      const url = new URL(rawUrl.startsWith("http") ? rawUrl : `${window.location.origin}${rawUrl}`);
-      if (this.currentUserId) url.searchParams.set("userId", this.currentUserId);
-      if (this.currentUserEmail) url.searchParams.set("email", this.currentUserEmail);
-      if (this.currentUserName) url.searchParams.set("name", this.currentUserName);
-
-      const eventSource = new EventSource(url.toString());
+      const eventSource = new EventSource(getApiEndpoint("/recording/events"));
 
       eventSource.onmessage = (msg) => {
         try {

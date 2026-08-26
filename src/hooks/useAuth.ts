@@ -27,17 +27,7 @@ export function useAuth() {
     try {
       const saved = localStorage.getItem(AUTH_STORAGE_KEY);
       if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed && parsed.id) {
-          // Purge contaminated legacy dummy sessions
-          if (parsed.email === "user@workspace.design" || parsed.id === "usr_7fa1f18622b7487c") {
-            console.warn("[useAuth] Purged contaminated dummy session from localStorage");
-            localStorage.removeItem(AUTH_STORAGE_KEY);
-            return null;
-          }
-          apiClient.setSessionContext(parsed.id, parsed.email, parsed.name);
-          return parsed;
-        }
+        return JSON.parse(saved);
       }
     } catch (e) {
       console.error("[useAuth] Failed to load user session", e);
@@ -125,13 +115,7 @@ export function useAuth() {
     const cbLastName = params.get("lastName");
 
     if (cbError) {
-      const errorMap: Record<string, string> = {
-        access_denied: "Google sign-in was cancelled.",
-        GOOGLE_AUTH_EXCHANGE_FAILED: "Google sign-in could not be verified by the server. Please try signing in again.",
-        INVALID_OR_EXPIRED_STATE: "The authentication session expired. Please sign in again.",
-        MISSING_AUTHORIZATION_CODE: "Google authorization code was missing. Please try again.",
-      };
-      setAuthError(errorMap[cbError] || `Authentication error: ${cbError}`);
+      setAuthError(cbError === "access_denied" ? "Google sign-in was cancelled." : `Authentication error: ${cbError}`);
       window.history.replaceState({}, document.title, window.location.pathname);
       return;
     }
@@ -167,7 +151,6 @@ export function useAuth() {
         }
       }
 
-      apiClient.setSessionContext(newUser.id, newUser.email, newUser.name);
       setUser(newUser);
       setIsDemoMode(false);
       window.history.replaceState({}, document.title, window.location.pathname);
@@ -195,7 +178,6 @@ export function useAuth() {
     // Listen for popup auth messages
     const handleAuthMessage = (event: MessageEvent) => {
       if (event.data?.type === "NOTEFLOW_AUTH_SUCCESS" && event.data?.user) {
-        apiClient.setSessionContext(event.data.user.id, event.data.user.email, event.data.user.name);
         setUser(event.data.user);
         setIsAuthenticating(false);
         authLockRef.current = false;
@@ -370,40 +352,13 @@ export function useAuth() {
           );
 
           if (popup) {
-            let authCompleted = false;
-            let pollTimer: number | null = null;
-
-            const messageHandler = (evt: MessageEvent) => {
-              if (evt.data?.type === "NOTEFLOW_AUTH_SUCCESS" || evt.data?.type === "NOTEFLOW_AUTH_ERROR") {
-                authCompleted = true;
-                if (pollTimer) window.clearInterval(pollTimer);
-                window.removeEventListener("message", messageHandler);
+            const pollTimer = window.setInterval(() => {
+              if (popup.closed) {
+                window.clearInterval(pollTimer);
+                authLockRef.current = false;
+                setIsAuthenticating(false);
               }
-            };
-            window.addEventListener("message", messageHandler);
-
-            pollTimer = window.setInterval(() => {
-              try {
-                if (authCompleted || popup.closed) {
-                  if (pollTimer) window.clearInterval(pollTimer);
-                  window.removeEventListener("message", messageHandler);
-                  authLockRef.current = false;
-                  setIsAuthenticating(false);
-                }
-              } catch {
-                // Cross-Origin-Opener-Policy blocks window.closed inspection; stop polling to avoid console spam
-                if (pollTimer) window.clearInterval(pollTimer);
-                window.removeEventListener("message", messageHandler);
-              }
-            }, 800);
-
-            // Safety timeout: stop waiting after 3 minutes
-            window.setTimeout(() => {
-              if (pollTimer) window.clearInterval(pollTimer);
-              window.removeEventListener("message", messageHandler);
-              authLockRef.current = false;
-              setIsAuthenticating(false);
-            }, 180000);
+            }, 600);
 
             return null;
           } else {
