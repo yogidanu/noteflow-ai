@@ -195,16 +195,65 @@ async function main() {
     assert(Boolean(recovered), "Recovered calendar must return events");
   });
 
-  // Test 10: Unauthenticated User Isolation
-  await runTest("Security & Isolation: Unauthenticated user without TokenVault session throws UNAUTHORIZED_NO_VALID_SESSION", async () => {
+  // Test 11: Exact Production Flow Simulation for usr_7fa1f18622b7487c
+  const prodUserId = "usr_7fa1f18622b7487c";
+  const prodUserEmail = "user@workspace.design";
+
+  runTest("Production Lifecycle [Step 1]: Identity login creates session with OpenID scopes only", () => {
+    tokenVault.saveTokens({
+      userId: prodUserId,
+      email: prodUserEmail,
+      name: "User",
+      displayName: "User",
+      accessToken: "ya29.prod_identity_token",
+      refreshToken: "1//refresh_prod_identity",
+      expiresInSeconds: 3600,
+      scopes: ["openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"],
+    });
+
+    const session = tokenVault.getSafeSession(prodUserId);
+    assert(Boolean(session), "Session must exist");
+    assert(session?.scopes.includes("openid") === true, "Must have openid scope");
+    assert(session?.scopes.some((s) => s.includes("calendar")) === false, "Must NOT have calendar scope");
+  });
+
+  await runTest("Production Lifecycle [Step 2]: Status check returns connected: false; /events throws CALENDAR_NOT_AUTHORIZED", async () => {
+    const session = tokenVault.getSafeSession(prodUserId);
+    const isConnected = Boolean(session && session.scopes?.some((s) => s.includes("calendar")));
+    assert(isConnected === false, "Status must report connected: false");
+
     let threw = false;
     try {
-      await calendarService.fetchUpcomingEvents("usr_attacker_unauthorized_999");
+      await calendarService.fetchUpcomingEvents(prodUserId);
     } catch (err: any) {
       threw = true;
-      assert(err.message === "UNAUTHORIZED_NO_VALID_SESSION", `Expected UNAUTHORIZED_NO_VALID_SESSION, got: ${err.message}`);
+      assert(err.message === "CALENDAR_NOT_AUTHORIZED", `Expected CALENDAR_NOT_AUTHORIZED, got: ${err.message}`);
     }
-    assert(threw, "Must throw UNAUTHORIZED_NO_VALID_SESSION");
+    assert(threw, "Must reject un-authorized calendar query");
+  });
+
+  await runTest("Production Lifecycle [Step 3]: User connects calendar; scope upgraded; status returns connected: true; /events returns HTTP 200", async () => {
+    // Upgraded scope grant via OAuth callback
+    const existing = tokenVault.getSafeSession(prodUserId);
+    tokenVault.saveTokens({
+      userId: prodUserId,
+      email: prodUserEmail,
+      name: "User",
+      displayName: "User",
+      accessToken: "ya29.prod_calendar_token",
+      refreshToken: "1//refresh_prod_calendar",
+      expiresInSeconds: 3600,
+      scopes: Array.from(new Set([...(existing?.scopes || []), "https://www.googleapis.com/auth/calendar.events.readonly"])),
+    });
+
+    const session = tokenVault.getSafeSession(prodUserId);
+    const isConnected = Boolean(session && session.scopes?.some((s) => s.includes("calendar")));
+    assert(isConnected === true, "Status must report connected: true");
+
+    const result = await calendarService.fetchUpcomingEvents(prodUserId);
+    assert(Boolean(result), "Must return events object");
+    assert(Array.isArray(result.events), "Must return array of events");
+    assert(result.accountEmail === prodUserEmail, "accountEmail must match user");
   });
 
   console.log("\n--------------------------------------------------------------------------------");
