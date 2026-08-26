@@ -27,7 +27,11 @@ export function useAuth() {
     try {
       const saved = localStorage.getItem(AUTH_STORAGE_KEY);
       if (saved) {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        if (parsed && parsed.id) {
+          apiClient.setSessionContext(parsed.id, parsed.email, parsed.name);
+          return parsed;
+        }
       }
     } catch (e) {
       console.error("[useAuth] Failed to load user session", e);
@@ -151,6 +155,7 @@ export function useAuth() {
         }
       }
 
+      apiClient.setSessionContext(newUser.id, newUser.email, newUser.name);
       setUser(newUser);
       setIsDemoMode(false);
       window.history.replaceState({}, document.title, window.location.pathname);
@@ -178,6 +183,7 @@ export function useAuth() {
     // Listen for popup auth messages
     const handleAuthMessage = (event: MessageEvent) => {
       if (event.data?.type === "NOTEFLOW_AUTH_SUCCESS" && event.data?.user) {
+        apiClient.setSessionContext(event.data.user.id, event.data.user.email, event.data.user.name);
         setUser(event.data.user);
         setIsAuthenticating(false);
         authLockRef.current = false;
