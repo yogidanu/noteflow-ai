@@ -338,11 +338,17 @@ export class MeetRecordApiClient {
       const json = await res.json().catch(() => null);
 
       if (!res.ok) {
+        const errorKey = json?.error || `HTTP_${res.status}`;
+        const isReconnectNeeded =
+          json?.requiresReconnect === true ||
+          errorKey === "CALENDAR_TOKEN_EXPIRED" ||
+          errorKey === "CALENDAR_PERMISSION_REVOKED";
+
         return {
           success: false,
           events: [],
-          error: json?.error || `HTTP_${res.status}`,
-          requiresReconnect: json?.requiresReconnect || res.status === 401,
+          error: errorKey,
+          requiresReconnect: isReconnectNeeded,
         };
       }
 
@@ -356,9 +362,9 @@ export class MeetRecordApiClient {
       }
     } catch (e: any) {
       console.warn("[ApiClient] Calendar events error", e);
-      return { success: false, events: [], error: e?.message || "NETWORK_ERROR" };
+      return { success: false, events: [], error: e?.message || "NETWORK_ERROR", requiresReconnect: false };
     }
-    return { success: false, events: [], error: "UNKNOWN_ERROR" };
+    return { success: false, events: [], error: "UNKNOWN_ERROR", requiresReconnect: false };
   }
 
   /**
@@ -382,11 +388,17 @@ export class MeetRecordApiClient {
       const json = await res.json().catch(() => null);
 
       if (!res.ok) {
+        const errorKey = json?.error || `HTTP_${res.status}`;
+        const isReconnectNeeded =
+          json?.requiresReconnect === true ||
+          errorKey === "CALENDAR_TOKEN_EXPIRED" ||
+          errorKey === "CALENDAR_PERMISSION_REVOKED";
+
         return {
           success: false,
           events: [],
-          error: json?.error || `HTTP_${res.status}`,
-          requiresReconnect: json?.requiresReconnect || res.status === 401,
+          error: errorKey,
+          requiresReconnect: isReconnectNeeded,
         };
       }
 
@@ -399,9 +411,9 @@ export class MeetRecordApiClient {
       }
     } catch (e: any) {
       console.warn("[ApiClient] Sync calendar error", e);
-      return { success: false, events: [], error: e?.message || "NETWORK_ERROR" };
+      return { success: false, events: [], error: e?.message || "NETWORK_ERROR", requiresReconnect: false };
     }
-    return { success: false, events: [], error: "UNKNOWN_ERROR" };
+    return { success: false, events: [], error: "UNKNOWN_ERROR", requiresReconnect: false };
   }
 
   /**

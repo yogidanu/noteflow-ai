@@ -48,10 +48,11 @@ calendarRouter.get("/events", requireAuth, async (req: Request, res: Response) =
     });
   } catch (error: any) {
     const isAuthError = authErrors.includes(error.message);
+    const requiresReconnect = error.message === "CALENDAR_TOKEN_EXPIRED" || error.message === "CALENDAR_PERMISSION_REVOKED";
     res.status(isAuthError ? 401 : 500).json({
       success: false,
       error: error.message || "FAILED_TO_FETCH_CALENDAR_EVENTS",
-      requiresReconnect: isAuthError,
+      requiresReconnect,
     });
   }
 });
@@ -73,10 +74,11 @@ calendarRouter.post("/sync", requireAuth, async (req: Request, res: Response) =>
     });
   } catch (error: any) {
     const isAuthError = authErrors.includes(error.message);
+    const requiresReconnect = error.message === "CALENDAR_TOKEN_EXPIRED" || error.message === "CALENDAR_PERMISSION_REVOKED";
     res.status(isAuthError ? 401 : 500).json({
       success: false,
       error: error.message || "SYNC_FAILED",
-      requiresReconnect: isAuthError,
+      requiresReconnect,
     });
   }
 });

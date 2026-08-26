@@ -67,7 +67,7 @@ export const CalendarSetupScreen: React.FC<CalendarSetupScreenProps> = ({
                   : isReauth
                   ? "Reconnect Google Calendar"
                   : isError
-                  ? "We couldn't connect your calendar"
+                  ? "Unable to connect"
                   : "Connect Google Calendar"}
               </h1>
               <p className="text-xs sm:text-sm text-[var(--text-secondary)] leading-relaxed max-w-sm mx-auto">
