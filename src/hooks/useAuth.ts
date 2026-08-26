@@ -115,7 +115,16 @@ export function useAuth() {
     const cbLastName = params.get("lastName");
 
     if (cbError) {
-      setAuthError(cbError === "access_denied" ? "Google sign-in was cancelled." : `Authentication error: ${cbError}`);
+      const errorMap: Record<string, string> = {
+        access_denied: "Google sign-in was cancelled.",
+        GOOGLE_AUTH_EXCHANGE_FAILED: "Google authentication failed. Please check your Google OAuth credentials on the server and try again.",
+        AUTH_IDENTITY_RESOLUTION_FAILED: "Unable to verify your Google identity. Please try again.",
+        INVALID_OR_EXPIRED_STATE: "The sign-in session expired. Please initiate sign-in again.",
+        OAUTH_CALLBACK_FAILED: "Google sign-in could not be completed. Please try again.",
+      };
+      setAuthError(errorMap[cbError] || `Authentication error: ${cbError}`);
+      setIsAuthenticating(false);
+      authLockRef.current = false;
       window.history.replaceState({}, document.title, window.location.pathname);
       return;
     }

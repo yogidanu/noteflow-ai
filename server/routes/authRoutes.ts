@@ -227,80 +227,88 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
     let firstName: string | undefined;
     let lastName: string | undefined;
     let userAvatar: string | undefined;
-    let accessToken = `ya29.auth_${crypto.randomBytes(16).toString("hex")}`;
-    let refreshToken = `1//refresh_${crypto.randomBytes(16).toString("hex")}`;
+    let accessToken = "";
+    let refreshToken = "";
     let expiresInSeconds = 3600;
 
-    // 6. Exchange code for Google OAuth tokens if live credentials are configured
-    if (config.google.clientSecret && !config.google.clientSecret.includes("sample")) {
-      try {
-        const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({
-            code,
-            client_id: config.google.clientId,
-            client_secret: config.google.clientSecret,
-            redirect_uri: config.google.redirectUri,
-            grant_type: "authorization_code",
-          }),
+    // 6. Exchange code for Google OAuth tokens
+    if (!config.google.clientSecret || config.google.clientSecret.includes("sample")) {
+      console.error("[OAuth DEBUG] Fatal: GOOGLE_CLIENT_SECRET is missing or invalid on the backend server.");
+      return res.redirect(`${config.frontendUrl}?error=GOOGLE_AUTH_EXCHANGE_FAILED`);
+    }
+
+    try {
+      const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          code,
+          client_id: config.google.clientId,
+          client_secret: config.google.clientSecret,
+          redirect_uri: config.google.redirectUri,
+          grant_type: "authorization_code",
+        }),
+      });
+
+      if (!tokenRes.ok) {
+        const errText = await tokenRes.text();
+        console.error("[OAuth DEBUG] Google token exchange failed:", {
+          status: tokenRes.status,
+          error: errText,
+        });
+        return res.redirect(`${config.frontendUrl}?error=GOOGLE_AUTH_EXCHANGE_FAILED`);
+      }
+
+      const tokenData: any = await tokenRes.json();
+      accessToken = tokenData.access_token || "";
+      refreshToken = tokenData.refresh_token || "";
+      expiresInSeconds = tokenData.expires_in || 3600;
+
+      // A. Decode OpenID Connect ID Token if provided by Google
+      if (tokenData.id_token) {
+        try {
+          const parts = tokenData.id_token.split(".");
+          if (parts.length >= 2) {
+            const decoded = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+            googleSubjectId = decoded.sub;
+            userEmail = decoded.email;
+            userName = decoded.name;
+            firstName = decoded.given_name;
+            lastName = decoded.family_name;
+            userAvatar = decoded.picture;
+          }
+        } catch (idTokenErr) {
+          console.warn("[OAuth DEBUG] Failed to parse id_token payload:", idTokenErr);
+        }
+      }
+
+      // B. If email or googleSubjectId not present in ID token, query userinfo endpoint with accessToken
+      if (!userEmail || !googleSubjectId) {
+        const userProfileRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+          headers: { Authorization: `Bearer ${accessToken}` },
         });
 
-        if (tokenRes.ok) {
-          const tokenData: any = await tokenRes.json();
-          accessToken = tokenData.access_token || accessToken;
-          refreshToken = tokenData.refresh_token || refreshToken;
-          expiresInSeconds = tokenData.expires_in || 3600;
-
-          // A. Decode OpenID Connect ID Token if provided by Google
-          if (tokenData.id_token) {
-            try {
-              const parts = tokenData.id_token.split(".");
-              if (parts.length >= 2) {
-                const decoded = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
-                googleSubjectId = decoded.sub || googleSubjectId;
-                userEmail = decoded.email || userEmail;
-                userName = decoded.name || userName;
-                firstName = decoded.given_name || firstName;
-                lastName = decoded.family_name || lastName;
-                userAvatar = decoded.picture || userAvatar;
-              }
-            } catch (idTokenErr) {
-              // continue to userinfo endpoint
-            }
-          }
-
-          // B. Fetch Google User Profile info
-          const userProfileRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
-            headers: { Authorization: `Bearer ${accessToken}` },
-          });
-
-          if (userProfileRes.ok) {
-            const profileData: any = await userProfileRes.json();
-            googleSubjectId = profileData.id || profileData.sub || googleSubjectId;
-            userEmail = profileData.email || userEmail;
-            userName = profileData.name || (profileData.given_name ? `${profileData.given_name} ${profileData.family_name || ""}`.trim() : userName);
-            firstName = profileData.given_name || firstName;
-            lastName = profileData.family_name || lastName;
-            userAvatar = profileData.picture || userAvatar;
-          }
+        if (userProfileRes.ok) {
+          const profileData: any = await userProfileRes.json();
+          googleSubjectId = profileData.id || profileData.sub;
+          userEmail = profileData.email;
+          userName = profileData.name || (profileData.given_name ? `${profileData.given_name} ${profileData.family_name || ""}`.trim() : "");
+          firstName = profileData.given_name;
+          lastName = profileData.family_name;
+          userAvatar = profileData.picture;
         } else {
-          const errText = await tokenRes.text();
-          console.warn("[OAuth DEBUG] Google token exchange warning:", errText);
+          console.error("[OAuth DEBUG] Failed to fetch Google userinfo:", await userProfileRes.text());
         }
-      } catch (tokenErr: any) {
-        console.warn("[OAuth DEBUG] Google token exchange error:", tokenErr?.message);
       }
+    } catch (tokenErr: any) {
+      console.error("[OAuth DEBUG] Fatal Google token exchange exception:", tokenErr?.message);
+      return res.redirect(`${config.frontendUrl}?error=GOOGLE_AUTH_EXCHANGE_FAILED`);
     }
 
-    // Require valid verified email from Google OAuth
-    if (!userEmail) {
-      userEmail = (req.query?.email as string) || "";
-    }
-
-    if (!userEmail) {
-      console.error("[OAuth DEBUG] Fatal: Google OAuth did not return a valid user email. Token exchange may have failed.");
-      return res.redirect(`${config.frontendUrl}?error=GOOGLE_AUTHENTICATION_FAILED`);
+    // Strict Fail Closed: Google MUST return verified userEmail and googleSubjectId
+    if (!userEmail || !googleSubjectId || !accessToken) {
+      console.error("[OAuth DEBUG] Fatal: Google OAuth did not return a verified user email and subject ID. Refusing to create session.");
+      return res.redirect(`${config.frontendUrl}?error=AUTH_IDENTITY_RESOLUTION_FAILED`);
     }
 
     if (!userName) {
@@ -310,18 +318,16 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
         const localPart = userEmail.split("@")[0];
         userName = localPart.replace(/[._-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
       } else {
-        userName = "Workspace User";
+        userName = "User";
       }
     }
 
-    // Stable Canonical User ID: Priority on Google Subject ID, fallback to deterministic email hash
-    const userId = googleSubjectId
-      ? `usr_g_${crypto.createHash("sha256").update(googleSubjectId).digest("hex").substring(0, 16)}`
-      : `usr_${crypto.createHash("sha256").update(userEmail.toLowerCase().trim()).digest("hex").substring(0, 16)}`;
+    // Stable Canonical User ID: Priority on Google Subject ID
+    const userId = `usr_g_${crypto.createHash("sha256").update(googleSubjectId).digest("hex").substring(0, 16)}`;
 
     console.log("[OAuth DEBUG] CANONICAL_IDENTITY_RESOLVED", {
       userId,
-      googleSubjectFingerprint: googleSubjectId ? crypto.createHash("sha256").update(googleSubjectId).digest("hex").substring(0, 12) : "none",
+      googleSubjectFingerprint: crypto.createHash("sha256").update(googleSubjectId).digest("hex").substring(0, 12),
       emailDomain: userEmail.includes("@") ? userEmail.split("@")[1] : "unknown",
       hasAvatar: Boolean(userAvatar),
     });
@@ -513,7 +519,15 @@ authRouter.post("/google/exchange", async (req: Request, res: Response) => {
     let expiresInSeconds = 3600;
 
     // If real authorization code received and real Google credentials configured
-    if (code && config.google.clientSecret && !config.google.clientSecret.includes("sample")) {
+    if (code) {
+      if (!config.google.clientSecret || config.google.clientSecret.includes("sample")) {
+        return res.status(401).json({
+          success: false,
+          error: "GOOGLE_AUTH_EXCHANGE_FAILED",
+          message: "Google client secret is missing on server.",
+        });
+      }
+
       try {
         const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
           method: "POST",
@@ -527,35 +541,45 @@ authRouter.post("/google/exchange", async (req: Request, res: Response) => {
           }),
         });
 
-        if (tokenRes.ok) {
-          const tokenData: any = await tokenRes.json();
-          accessToken = tokenData.access_token || accessToken;
-          if (tokenData.refresh_token) {
-            refreshToken = tokenData.refresh_token;
-          }
-          if (tokenData.expires_in) {
-            expiresInSeconds = tokenData.expires_in;
-          }
+        if (!tokenRes.ok) {
+          const errText = await tokenRes.text();
+          console.error("[AuthRoutes] Google token exchange failed:", errText);
+          return res.status(401).json({
+            success: false,
+            error: "GOOGLE_AUTH_EXCHANGE_FAILED",
+            message: "Failed to exchange authorization code with Google.",
+          });
+        }
 
-          // Decode OpenID ID token
-          if (tokenData.id_token) {
-            try {
-              const parts = tokenData.id_token.split(".");
-              if (parts.length >= 2) {
-                const decoded = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
-                resolvedSub = decoded.sub || resolvedSub;
-                userEmail = decoded.email || userEmail;
-                userName = decoded.name || userName;
-                firstName = decoded.given_name || firstName;
-                lastName = decoded.family_name || lastName;
-                userAvatar = decoded.picture || userAvatar;
-              }
-            } catch {
-              // continue
+        const tokenData: any = await tokenRes.json();
+        accessToken = tokenData.access_token || "";
+        if (tokenData.refresh_token) {
+          refreshToken = tokenData.refresh_token;
+        }
+        if (tokenData.expires_in) {
+          expiresInSeconds = tokenData.expires_in;
+        }
+
+        // Decode OpenID ID token
+        if (tokenData.id_token) {
+          try {
+            const parts = tokenData.id_token.split(".");
+            if (parts.length >= 2) {
+              const decoded = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+              resolvedSub = decoded.sub || resolvedSub;
+              userEmail = decoded.email || userEmail;
+              userName = decoded.name || userName;
+              firstName = decoded.given_name || firstName;
+              lastName = decoded.family_name || lastName;
+              userAvatar = decoded.picture || userAvatar;
             }
+          } catch {
+            // continue
           }
+        }
 
-          // Fetch user profile from Google UserInfo
+        // Fetch user profile from Google UserInfo
+        if (!userEmail || !resolvedSub) {
           const profileRes = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
             headers: { Authorization: `Bearer ${accessToken}` },
           });
@@ -570,8 +594,13 @@ authRouter.post("/google/exchange", async (req: Request, res: Response) => {
             userAvatar = profile.picture || userAvatar;
           }
         }
-      } catch (tokenErr) {
-        console.warn("[AuthRoutes] Live Google token exchange failed, using safe fallback:", tokenErr);
+      } catch (tokenErr: any) {
+        console.error("[AuthRoutes] Live Google token exchange exception:", tokenErr?.message);
+        return res.status(401).json({
+          success: false,
+          error: "GOOGLE_AUTH_EXCHANGE_FAILED",
+          message: tokenErr?.message || "Google token exchange failed.",
+        });
       }
     }
 

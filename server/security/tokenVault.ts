@@ -74,6 +74,10 @@ class TokenVault {
       const records: StoredOAuthRecord[] = JSON.parse(raw);
       this.vault.clear();
       records.forEach((r) => {
+        // Invalidate legacy dummy/fallback sessions
+        if (r.userId === "usr_7fa1f18622b7487c" || r.email === "user@workspace.design") {
+          return;
+        }
         // Ensure backward compatibility if profile field is missing
         if (!r.profile) {
           r.profile = {
