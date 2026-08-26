@@ -5,6 +5,7 @@ import { UserProfile } from "../../hooks/useAuth";
 interface CalendarSetupScreenProps {
   user: UserProfile;
   isConnecting: boolean;
+  status?: "NOT_CONNECTED" | "CONNECTING" | "CONNECTED" | "REAUTH_REQUIRED" | "ERROR";
   error?: string | null;
   onConnectCalendar: (email?: string) => Promise<void> | void;
   onSkip?: () => void;
@@ -14,17 +15,20 @@ interface CalendarSetupScreenProps {
 export const CalendarSetupScreen: React.FC<CalendarSetupScreenProps> = ({
   user,
   isConnecting,
+  status = "NOT_CONNECTED",
   error,
   onConnectCalendar,
   onSkip,
   onLogout,
 }) => {
-  const [useManualEmail, setUseManualEmail] = useState(false);
-  const [emailInput, setEmailInput] = useState(user.email || "");
+  const [emailInput] = useState(user.email || "");
 
   const handleConnect = () => {
     onConnectCalendar(emailInput);
   };
+
+  const isReauth = status === "REAUTH_REQUIRED" || (error && error.toLowerCase().includes("reconnect"));
+  const isError = Boolean(error) && !isReauth;
 
   return (
     <main
@@ -52,16 +56,18 @@ export const CalendarSetupScreen: React.FC<CalendarSetupScreenProps> = ({
         {/* Hero Card */}
         <div className="p-6 sm:p-8 rounded-3xl bg-[var(--surface-card)] border border-[var(--border-default)] shadow-xl space-y-6">
           <div className="text-center space-y-3">
-            <div className="w-12 h-12 rounded-2xl bg-[var(--primary-surface)] border border-[var(--primary-border)] flex items-center justify-center text-[var(--primary-action)] shadow-2xs mx-auto">
+            <div className={`w-12 h-12 rounded-2xl ${isReauth ? "bg-amber-500/10 border-amber-500/20 text-amber-500" : isError ? "bg-red-500/10 border-red-500/20 text-red-500" : "bg-[var(--primary-surface)] border-[var(--primary-border)] text-[var(--primary-action)]"} border flex items-center justify-center shadow-2xs mx-auto`}>
               <Calendar className="w-6 h-6" aria-hidden="true" />
             </div>
 
             <div className="space-y-1">
               <h1 className="text-xl sm:text-2xl font-bold text-[var(--text-primary)] tracking-tight">
-                Connect Google Calendar
+                {isReauth ? "Reconnect Google Calendar" : "Connect Google Calendar"}
               </h1>
               <p className="text-xs sm:text-sm text-[var(--text-secondary)] leading-relaxed max-w-sm mx-auto">
-                NoteFlow AI needs read-only access to your calendar to detect upcoming Google Meet calls.
+                {isReauth
+                  ? "Google Calendar authorization was revoked or expired. Please re-authenticate to continue."
+                  : "NoteFlow AI needs read-only access to your calendar to detect upcoming Google Meet calls."}
               </p>
             </div>
           </div>
@@ -125,13 +131,25 @@ export const CalendarSetupScreen: React.FC<CalendarSetupScreenProps> = ({
               onClick={handleConnect}
               disabled={isConnecting}
               aria-busy={isConnecting}
-              aria-label={isConnecting ? "Authorizing with Google Calendar..." : "Connect Google Calendar"}
+              aria-label={isConnecting ? "Authorizing with Google Calendar..." : isReauth ? "Reconnect Google Calendar" : isError ? "Try Again" : "Connect Google Calendar"}
               className="w-full h-12 px-4 rounded-xl bg-[var(--primary-action)] hover:bg-[var(--primary-hover)] active:scale-[0.985] text-white text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-[var(--border-focus)] outline-none"
             >
               {isConnecting ? (
                 <>
                   <RefreshCw className="w-4 h-4 animate-spin" aria-hidden="true" />
                   <span aria-live="polite">Authorizing with Google...</span>
+                </>
+              ) : isReauth ? (
+                <>
+                  <RefreshCw className="w-4 h-4" aria-hidden="true" />
+                  <span>Reconnect Google Calendar</span>
+                  <ArrowRight className="w-4 h-4" aria-hidden="true" />
+                </>
+              ) : isError ? (
+                <>
+                  <RefreshCw className="w-4 h-4" aria-hidden="true" />
+                  <span>Try Again</span>
+                  <ArrowRight className="w-4 h-4" aria-hidden="true" />
                 </>
               ) : (
                 <>

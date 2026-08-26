@@ -245,6 +245,19 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
         const left = window.screenX + (window.outerWidth - width) / 2;
         const top = window.screenY + (window.outerHeight - height) / 2.5;
 
+        // COOP-Safe Listener for popup message broadcast
+        let messageResolved = false;
+        const messagePromise = new Promise<void>((resolve) => {
+          const handler = (evt: MessageEvent) => {
+            if (evt.data?.type === "NOTEFLOW_AUTH_SUCCESS" || evt.data?.type === "NOTEFLOW_CALENDAR_SUCCESS") {
+              messageResolved = true;
+              window.removeEventListener("message", handler);
+              resolve();
+            }
+          };
+          window.addEventListener("message", handler);
+        });
+
         const popup = window.open(
           authData.authUrl,
           "NoteFlow Calendar Authorization",
@@ -252,38 +265,71 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
         );
 
         if (popup) {
-          await new Promise<void>((resolve) => {
+          const pollPromise = new Promise<void>((resolve) => {
             const checkTimer = window.setInterval(() => {
-              if (popup.closed) {
+              try {
+                if (messageResolved || popup.closed) {
+                  window.clearInterval(checkTimer);
+                  resolve();
+                }
+              } catch {
+                // Cross-Origin-Opener-Policy may throw when inspecting popup.closed; handle gracefully
                 window.clearInterval(checkTimer);
                 resolve();
               }
             }, 600);
           });
+
+          await Promise.race([messagePromise, pollPromise]);
         }
       }
+
+      // Small delay to ensure backend TokenVault transaction is committed
+      await new Promise((r) => setTimeout(r, 400));
 
       // 2. Fetch real calendar meetings after authorization
       const gcalEvents = await apiClient.fetchCalendarEvents();
       if (gcalEvents.success && Array.isArray(gcalEvents.events)) {
         const syncTime = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-        setCalendarState({
+        const newState: CalendarConnectionState = {
           isConnected: true,
           status: "CONNECTED",
           accountEmail: gcalEvents.accountEmail || accountEmail,
           lastSyncedAt: gcalEvents.lastSyncedAt || syncTime,
           errorMessage: null,
-        });
+        };
+        setCalendarState(newState);
+        try {
+          localStorage.setItem(CALENDAR_STORAGE_KEY, JSON.stringify(newState));
+        } catch {}
         setDetectedMeetings(gcalEvents.events);
+      } else if (gcalEvents.error === "CALENDAR_NOT_AUTHORIZED") {
+        setCalendarState({
+          isConnected: false,
+          status: "REAUTH_REQUIRED",
+          accountEmail,
+          lastSyncedAt: null,
+          errorMessage: "Google Calendar access was not granted. Please click Connect Google Calendar to grant permission.",
+        });
+        setCalendarError("Google Calendar access was not granted. Please click Connect Google Calendar to grant permission.");
+      } else if (gcalEvents.error === "CALENDAR_PERMISSION_REVOKED") {
+        setCalendarState({
+          isConnected: false,
+          status: "REAUTH_REQUIRED",
+          accountEmail,
+          lastSyncedAt: null,
+          errorMessage: "Google Calendar access was revoked. Please reconnect.",
+        });
+        setCalendarError("Google Calendar access was revoked. Please reconnect.");
       } else if (gcalEvents.requiresReconnect) {
         setCalendarState({
           isConnected: false,
           status: "REAUTH_REQUIRED",
           accountEmail,
           lastSyncedAt: null,
-          errorMessage: "Google Calendar authorization was cancelled or denied.",
+          errorMessage: "Google Calendar session expired. Please reconnect.",
         });
-        setCalendarError("Google Calendar authorization was cancelled or denied.");
+        setCalendarError("Google Calendar session expired. Please reconnect.");
       } else {
         setCalendarState({
           isConnected: false,
@@ -304,7 +350,7 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
         lastSyncedAt: null,
         errorMessage: err?.message || "Failed to authorize Google Calendar.",
       });
-      setCalendarError(err.message || "Failed to authorize Google Calendar.");
+      setCalendarError(err?.message || "Failed to authorize Google Calendar.");
     } finally {
       setIsSyncingCalendar(false);
     }

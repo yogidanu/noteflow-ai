@@ -338,6 +338,7 @@ export function App() {
       <CalendarSetupScreen
         user={user}
         isConnecting={isSyncingCalendar}
+        status={calendarState.status}
         error={calendarError}
         onConnectCalendar={async (email) => {
           await connectCalendar(email || user.email);
