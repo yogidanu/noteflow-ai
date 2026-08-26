@@ -108,6 +108,7 @@ export function useAuth() {
     const cbUserId = params.get("userId");
     const cbEmail = params.get("email");
     const cbName = params.get("name");
+    const cbReason = params.get("reason");
     const cbError = params.get("error");
     const cbAvatar = params.get("avatarUrl");
     const cbSub = params.get("googleSubjectId") || params.get("sub");
@@ -115,14 +116,21 @@ export function useAuth() {
     const cbLastName = params.get("lastName");
 
     if (cbError) {
-      const errorMap: Record<string, string> = {
-        access_denied: "Google sign-in was cancelled.",
-        GOOGLE_AUTH_EXCHANGE_FAILED: "Google authentication failed. Please check your Google OAuth credentials on the server and try again.",
-        AUTH_IDENTITY_RESOLUTION_FAILED: "Unable to verify your Google identity. Please try again.",
-        INVALID_OR_EXPIRED_STATE: "The sign-in session expired. Please initiate sign-in again.",
-        OAUTH_CALLBACK_FAILED: "Google sign-in could not be completed. Please try again.",
-      };
-      setAuthError(errorMap[cbError] || `Authentication error: ${cbError}`);
+      let specificMessage = "Google authentication failed. Please check your Google OAuth credentials on the server and try again.";
+      if (cbReason === "SERVER_MISSING_CLIENT_SECRET") {
+        specificMessage = "Google OAuth is missing GOOGLE_CLIENT_SECRET on the backend. Please add GOOGLE_CLIENT_SECRET in your Render Environment settings.";
+      } else if (cbReason?.startsWith("GOOGLE_")) {
+        const errCode = cbReason.replace("GOOGLE_", "");
+        specificMessage = `Google rejected the token exchange (${errCode}). Please verify that the client secret and redirect URI match Google Cloud Console.`;
+      } else if (cbError === "access_denied") {
+        specificMessage = "Google sign-in was cancelled.";
+      } else if (cbError === "AUTH_IDENTITY_RESOLUTION_FAILED") {
+        specificMessage = "Unable to verify your Google identity claims. Please try signing in again.";
+      } else if (cbError === "INVALID_OR_EXPIRED_STATE") {
+        specificMessage = "The sign-in session expired. Please initiate sign-in again.";
+      }
+
+      setAuthError(specificMessage);
       setIsAuthenticating(false);
       authLockRef.current = false;
       window.history.replaceState({}, document.title, window.location.pathname);

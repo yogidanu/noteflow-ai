@@ -233,9 +233,16 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
 
     // 6. Exchange code for Google OAuth tokens
     if (!config.google.clientSecret || config.google.clientSecret.includes("sample")) {
-      console.error("[OAuth DEBUG] Fatal: GOOGLE_CLIENT_SECRET is missing or invalid on the backend server.");
-      return res.redirect(`${config.frontendUrl}?error=GOOGLE_AUTH_EXCHANGE_FAILED`);
+      console.error("[OAuth DEBUG] Fatal: GOOGLE_CLIENT_SECRET is missing or has default placeholder value on Render server.");
+      return res.redirect(`${config.frontendUrl}?error=GOOGLE_AUTH_EXCHANGE_FAILED&reason=SERVER_MISSING_CLIENT_SECRET`);
     }
+
+    console.log("[OAuth DEBUG] TOKEN_EXCHANGE_INITIATED", {
+      clientIdPrefix: config.google.clientId ? config.google.clientId.substring(0, 16) + "..." : "none",
+      redirectUri: config.google.redirectUri,
+      hasSecret: Boolean(config.google.clientSecret),
+      codeLength: code ? code.length : 0,
+    });
 
     try {
       const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
@@ -252,11 +259,21 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
 
       if (!tokenRes.ok) {
         const errText = await tokenRes.text();
-        console.error("[OAuth DEBUG] Google token exchange failed:", {
+        let googleErrorType = "unknown";
+        try {
+          const parsed = JSON.parse(errText);
+          googleErrorType = parsed.error || `HTTP_${tokenRes.status}`;
+        } catch {
+          googleErrorType = `HTTP_${tokenRes.status}`;
+        }
+
+        console.error("[OAuth DEBUG] Google token exchange rejected by Google:", {
           status: tokenRes.status,
-          error: errText,
+          errorType: googleErrorType,
+          responseSnippet: errText.substring(0, 200),
         });
-        return res.redirect(`${config.frontendUrl}?error=GOOGLE_AUTH_EXCHANGE_FAILED`);
+
+        return res.redirect(`${config.frontendUrl}?error=GOOGLE_AUTH_EXCHANGE_FAILED&reason=GOOGLE_${googleErrorType}`);
       }
 
       const tokenData: any = await tokenRes.json();
