@@ -165,7 +165,25 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
       Boolean(stateRecord?.codeChallenge) ||
       stateRecord?.flowType === "desktop";
 
-    // 2. Handle Google-side user denial or access error
+    // 2. Handle duplicate callback within idempotency window (e.g. Chrome prefetch / duplicate redirect)
+    if (stateRecord?.isDuplicateCallback && stateRecord.resolvedSession) {
+      const sess = stateRecord.resolvedSession;
+      console.log(`[OAuth DEBUG] Fast-forwarding idempotent duplicate callback for ${sess.userId}`);
+      if (isDesktopFlow) {
+        return res.redirect(
+          `noteflow://auth/callback?userId=${encodeURIComponent(sess.userId)}&email=${encodeURIComponent(sess.email)}&name=${encodeURIComponent(sess.name)}`
+        );
+      }
+      const finalTarget = sess.redirectUri.startsWith("http") ? sess.redirectUri : config.frontendUrl;
+      const redirectUrl = new URL(finalTarget);
+      redirectUrl.searchParams.set("userId", sess.userId);
+      redirectUrl.searchParams.set("email", sess.email);
+      redirectUrl.searchParams.set("name", sess.name);
+      if (sess.avatarUrl) redirectUrl.searchParams.set("avatarUrl", sess.avatarUrl);
+      return res.redirect(redirectUrl.toString());
+    }
+
+    // 3. Handle Google-side user denial or access error
     if (error) {
       console.warn("[OAuth DEBUG] Google OAuth user denial / error received:", error);
       if (isDesktopFlow) {
@@ -178,23 +196,29 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
       );
     }
 
-    // 3. Reject missing or expired CSRF state
+    // 4. Reject missing or expired CSRF state (redirect browser with error query parameter)
     if (!state || !stateRecord) {
       console.warn("[OAuth DEBUG] Rejected invalid or expired state:", { stateFingerprint });
-      return res.status(400).json({
-        success: false,
-        error: "INVALID_OR_EXPIRED_STATE",
-        message: "The OAuth state nonce is invalid or has expired. Please initiate login again.",
-      });
+      if (isDesktopFlow) {
+        return res.redirect(
+          `noteflow://auth/callback?error=INVALID_OR_EXPIRED_STATE`
+        );
+      }
+      return res.redirect(
+        `${config.frontendUrl}?error=INVALID_OR_EXPIRED_STATE`
+      );
     }
 
-    // 4. Reject missing authorization code
+    // 5. Reject missing authorization code (redirect browser with error query parameter)
     if (!code) {
-      return res.status(400).json({
-        success: false,
-        error: "MISSING_AUTHORIZATION_CODE",
-        message: "No authorization code was provided by Google.",
-      });
+      if (isDesktopFlow) {
+        return res.redirect(
+          `noteflow://auth/callback?error=MISSING_AUTHORIZATION_CODE`
+        );
+      }
+      return res.redirect(
+        `${config.frontendUrl}?error=MISSING_AUTHORIZATION_CODE`
+      );
     }
 
     let googleSubjectId: string | undefined;
@@ -207,7 +231,7 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
     let refreshToken = `1//refresh_${crypto.randomBytes(16).toString("hex")}`;
     let expiresInSeconds = 3600;
 
-    // 5. Exchange code for Google OAuth tokens if live credentials are configured
+    // 6. Exchange code for Google OAuth tokens if live credentials are configured
     if (config.google.clientSecret && !config.google.clientSecret.includes("sample")) {
       try {
         const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
@@ -297,11 +321,11 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
       hasAvatar: Boolean(userAvatar),
     });
 
-    const returnedScopes = tokenData?.scope ? tokenData.scope.split(" ") : (stateRecord?.scopes || config.google.authScopes);
+    const returnedScopes = (stateRecord?.scopes as string[] | undefined) || config.google.authScopes;
     const existingSession = tokenVault.getSafeSession(userId);
     const mergedScopes = Array.from(new Set([...(existingSession?.scopes || []), ...returnedScopes]));
 
-    // 6. Encrypt and persist canonical tokens and profile into secure vault
+    // 7. Encrypt and persist canonical tokens and profile into secure vault
     tokenVault.saveTokens({
       userId,
       googleSubjectId,
@@ -317,7 +341,16 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
       scopes: mergedScopes,
     });
 
-    // 7. Route back to Client (Desktop Protocol vs Web Application)
+    // Record session completion in state store for rapid duplicate callback idempotency
+    oauthStateStore.recordSessionCompletion(stateRecord.nonce, {
+      userId,
+      email: userEmail,
+      name: userName,
+      avatarUrl: userAvatar,
+      redirectUri: targetRedirectUri,
+    });
+
+    // 8. Route back to Client (Desktop Protocol vs Web Application)
     if (isDesktopFlow) {
       // Generate one-time code for PKCE verification
       const oneTimeCode = `auth_${Date.now()}_${crypto.randomBytes(8).toString("hex")}`;
@@ -365,11 +398,7 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
     return res.redirect(redirectUrl.toString());
   } catch (err: any) {
     console.error("[OAuth DEBUG] Fatal error in GET /google/callback:", err);
-    res.status(500).json({
-      success: false,
-      error: "OAUTH_CALLBACK_FAILED",
-      message: "An internal error occurred while processing the Google OAuth callback.",
-    });
+    return res.redirect(`${config.frontendUrl}?error=OAUTH_CALLBACK_FAILED`);
   }
 });
 
