@@ -6,6 +6,7 @@ import { encryptToken, decryptToken } from "./crypto.js";
 export interface OAuthStateRecord {
   createdAt: number;
   redirectUri: string;
+  scopes?: string[];
   codeChallenge?: string;
   codeChallengeMethod?: string;
   flowType?: "web" | "desktop";
@@ -24,6 +25,7 @@ export interface OAuthStateRecord {
 interface StateTokenPayload {
   nonce: string;
   redirectUri: string;
+  scopes?: string[];
   codeChallenge?: string;
   codeChallengeMethod?: string;
   flowType?: "web" | "desktop";
@@ -120,6 +122,7 @@ class OAuthStateStore {
     const payload: StateTokenPayload = {
       nonce,
       redirectUri: record.redirectUri,
+      scopes: record.scopes,
       codeChallenge: record.codeChallenge,
       codeChallengeMethod: record.codeChallengeMethod,
       flowType: record.flowType,
@@ -186,6 +189,7 @@ class OAuthStateStore {
       return {
         createdAt: payload.createdAt,
         redirectUri: payload.redirectUri,
+        scopes: payload.scopes,
         codeChallenge: payload.codeChallenge,
         codeChallengeMethod: payload.codeChallengeMethod,
         flowType: payload.flowType,
@@ -232,6 +236,7 @@ class OAuthStateStore {
           return {
             createdAt: payload.createdAt,
             redirectUri: payload.redirectUri,
+            scopes: payload.scopes,
             codeChallenge: payload.codeChallenge,
             codeChallengeMethod: payload.codeChallengeMethod,
             flowType: payload.flowType,
@@ -253,6 +258,7 @@ class OAuthStateStore {
       return {
         createdAt: payload.createdAt,
         redirectUri: payload.redirectUri,
+        scopes: payload.scopes,
         codeChallenge: payload.codeChallenge,
         codeChallengeMethod: payload.codeChallengeMethod,
         flowType: payload.flowType,

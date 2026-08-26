@@ -367,62 +367,42 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
       // Small delay to ensure backend TokenVault transaction is committed
       await new Promise((r) => setTimeout(r, 400));
 
-      // 2. Fetch real calendar meetings after authorization
-      const gcalEvents = await apiClient.fetchCalendarEvents();
-      if (gcalEvents.success && Array.isArray(gcalEvents.events)) {
+      // 2. Query authoritative backend calendar status
+      const statusCheck = await apiClient.getCalendarStatus();
+
+      if (statusCheck.connected) {
         const syncTime = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
         const newState: CalendarConnectionState = {
           isConnected: true,
           status: "CONNECTED",
-          accountEmail: gcalEvents.accountEmail || accountEmail,
-          lastSyncedAt: gcalEvents.lastSyncedAt || syncTime,
+          accountEmail: statusCheck.accountEmail || accountEmail,
+          lastSyncedAt: syncTime,
           errorMessage: null,
         };
         setCalendarState(newState);
         const key = getCalendarStorageKey(userId);
         if (key) localStorage.setItem(key, JSON.stringify(newState));
-        setDetectedMeetings(gcalEvents.events);
-      } else if (gcalEvents.error === "CALENDAR_NOT_AUTHORIZED") {
-        // User cancelled or denied: remain NOT_CONNECTED with clear message
-        setCalendarState({
+
+        // Safe to fetch real calendar meetings after backend confirmed calendar scope
+        const gcalEvents = await apiClient.fetchCalendarEvents();
+        if (gcalEvents.success && Array.isArray(gcalEvents.events)) {
+          setDetectedMeetings(gcalEvents.events);
+        }
+      } else {
+        // User cancelled or denied: remain NOT_CONNECTED cleanly
+        const unconnState: CalendarConnectionState = {
           isConnected: false,
           status: "NOT_CONNECTED",
           accountEmail: null,
           lastSyncedAt: null,
-          errorMessage: "Google Calendar access was not granted. Please click Connect Google Calendar to try again.",
-        });
-        setCalendarError("Google Calendar access was not granted. Please click Connect Google Calendar to try again.");
-      } else if (gcalEvents.error === "CALENDAR_PERMISSION_REVOKED") {
-        setCalendarState({
-          isConnected: false,
-          status: "REAUTH_REQUIRED",
-          accountEmail,
-          lastSyncedAt: null,
-          errorMessage: "Google Calendar access was revoked. Please reconnect.",
-        });
-        setCalendarError("Google Calendar access was revoked. Please reconnect.");
-      } else if (gcalEvents.error === "CALENDAR_TOKEN_EXPIRED") {
-        setCalendarState({
-          isConnected: false,
-          status: "REAUTH_REQUIRED",
-          accountEmail,
-          lastSyncedAt: null,
-          errorMessage: "Google Calendar session expired. Please reconnect.",
-        });
-        setCalendarError("Google Calendar session expired. Please reconnect.");
-      } else {
-        setCalendarState({
-          isConnected: false,
-          status: "ERROR",
-          accountEmail: null,
-          lastSyncedAt: null,
-          errorMessage: gcalEvents.error || "Failed to authorize Google Calendar.",
-        });
-        setCalendarError(gcalEvents.error || "Failed to authorize Google Calendar.");
-        setDetectedMeetings([]);
+          errorMessage: null,
+        };
+        setCalendarState(unconnState);
+        const key = getCalendarStorageKey(userId);
+        if (key) localStorage.setItem(key, JSON.stringify(unconnState));
       }
     } catch (err: any) {
-      console.error("[useMeetRecord] Connect calendar error:", err);
+      console.error("[useMeetRecord] Error connecting calendar:", err);
       setCalendarState({
         isConnected: false,
         status: "ERROR",

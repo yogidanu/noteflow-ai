@@ -76,9 +76,10 @@ authRouter.get("/google/url", (req: Request, res: Response) => {
     ? config.google.allScopes
     : config.google.authScopes;
 
-  // Generate cryptographically signed state storing client destination
+  // Generate cryptographically signed state storing client destination and requested scopes
   const state = oauthStateStore.generateState({
     redirectUri: clientDestination,
+    scopes: activeScopes,
     codeChallenge,
     codeChallengeMethod,
     flowType: clientDestination.startsWith("noteflow://") || Boolean(codeChallenge) ? "desktop" : "web",
@@ -230,6 +231,7 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
     let accessToken = "";
     let refreshToken = "";
     let expiresInSeconds = 3600;
+    let grantedScopes: string[] = [];
 
     // 6. Exchange code for Google OAuth tokens
     if (!config.google.clientSecret || config.google.clientSecret.includes("sample")) {
@@ -280,6 +282,11 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
       accessToken = tokenData.access_token || "";
       refreshToken = tokenData.refresh_token || "";
       expiresInSeconds = tokenData.expires_in || 3600;
+
+      // Extract verified scopes returned by Google
+      if (tokenData.scope && typeof tokenData.scope === "string") {
+        grantedScopes = tokenData.scope.split(" ").map((s: string) => s.trim()).filter(Boolean);
+      }
 
       // A. Decode OpenID Connect ID Token if provided by Google
       if (tokenData.id_token) {
@@ -349,9 +356,10 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
       hasAvatar: Boolean(userAvatar),
     });
 
-    const returnedScopes = (stateRecord?.scopes as string[] | undefined) || config.google.authScopes;
+    const activeRequestedScopes = (stateRecord?.scopes as string[] | undefined) || config.google.authScopes;
+    const finalGrantedScopes = grantedScopes.length > 0 ? grantedScopes : activeRequestedScopes;
     const existingSession = tokenVault.getSafeSession(userId);
-    const mergedScopes = Array.from(new Set([...(existingSession?.scopes || []), ...returnedScopes]));
+    const mergedScopes = Array.from(new Set([...(existingSession?.scopes || []), ...finalGrantedScopes]));
 
     // 7. Encrypt and persist canonical tokens and profile into secure vault
     tokenVault.saveTokens({
