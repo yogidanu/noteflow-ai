@@ -290,6 +290,34 @@ export class MeetRecordApiClient {
   }
 
   /**
+   * Queries authoritative backend calendar connection state.
+   */
+  public async getCalendarStatus(): Promise<{
+    connected: boolean;
+    accountEmail?: string | null;
+    scopes?: string[];
+  }> {
+    try {
+      const available = await this.checkAvailability();
+      if (!available) return { connected: false };
+
+      const res = await fetch(getApiEndpoint("/calendar/status"), {
+        headers: this.getAuthHeaders(),
+      });
+      if (!res.ok) return { connected: false };
+
+      const json = await res.json();
+      return {
+        connected: Boolean(json.connected),
+        accountEmail: json.accountEmail,
+        scopes: json.scopes,
+      };
+    } catch {
+      return { connected: false };
+    }
+  }
+
+  /**
    * Fetches detected upcoming meetings from backend.
    */
   public async fetchCalendarEvents(): Promise<{

@@ -115,7 +115,87 @@ async function main() {
     assert(result.accountEmail === testUserEmail, "accountEmail must match authenticated user");
   });
 
-  // Test 5: Unauthenticated User Isolation
+  // Test 5: Backend Status Authority for User A
+  runTest("Backend Status Authority: getSafeSession correctly identifies calendar connection status", () => {
+    const session = tokenVault.getSafeSession(testUserId);
+    const hasCalendar = Boolean(session && session.scopes?.some((s) => s.includes("calendar")));
+    assert(hasCalendar === true, "User A must be reported as connected on backend");
+  });
+
+  // Test 6: Multi-User Isolation & Fresh User Switch (User B)
+  const testUserBId = "usr_g_calendar_user_b_002";
+  const testUserBEmail = "bob.designer@workspace.design";
+
+  runTest("User B Login: New user has identity scopes only and does NOT inherit User A's calendar", () => {
+    tokenVault.saveTokens({
+      userId: testUserBId,
+      email: testUserBEmail,
+      name: "Bob Designer",
+      displayName: "Bob Designer",
+      accessToken: "ya29.user_b_identity_token",
+      refreshToken: "1//refresh_user_b_identity",
+      expiresInSeconds: 3600,
+      scopes: ["openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"],
+    });
+
+    const sessionB = tokenVault.getSafeSession(testUserBId);
+    assert(Boolean(sessionB), "User B session must exist");
+    const hasCalendarB = Boolean(sessionB?.scopes.some((s) => s.includes("calendar")));
+    assert(hasCalendarB === false, "User B must NOT have calendar scope");
+  });
+
+  // Test 7: User B blocked from fetching calendar events
+  await runTest("User B Calendar Isolation: Fetching events for User B throws CALENDAR_NOT_AUTHORIZED", async () => {
+    let threw = false;
+    try {
+      await calendarService.fetchUpcomingEvents(testUserBId);
+    } catch (err: any) {
+      threw = true;
+      assert(err.message === "CALENDAR_NOT_AUTHORIZED", `Expected CALENDAR_NOT_AUTHORIZED, got: ${err.message}`);
+    }
+    assert(threw, "User B must be rejected with CALENDAR_NOT_AUTHORIZED");
+  });
+
+  // Test 8: User A Switch Back (User A still has calendar)
+  await runTest("User A Session Persistence: User A retains calendar access independently of User B", async () => {
+    const sessionA = tokenVault.getSafeSession(testUserId);
+    assert(sessionA?.scopes.some((s) => s.includes("calendar")) === true, "User A must still have calendar scope");
+    const result = await calendarService.fetchUpcomingEvents(testUserId);
+    assert(result.accountEmail === testUserEmail, "User A events must match testUserEmail");
+  });
+
+  // Test 9: Revoked Permission Simulation & Recovery
+  await runTest("Revocation & Recovery: When user revokes calendar tokens, vault purge removes scope, reconnect recovers", async () => {
+    // Simulate user revoking or token expiring
+    tokenVault.revoke(testUserId);
+    assert(tokenVault.getSafeSession(testUserId) === null, "Tokens must be purged on revocation");
+
+    let threw = false;
+    try {
+      await calendarService.fetchUpcomingEvents(testUserId);
+    } catch (err: any) {
+      threw = true;
+      assert(err.message === "UNAUTHORIZED_NO_VALID_SESSION", `Expected UNAUTHORIZED_NO_VALID_SESSION, got: ${err.message}`);
+    }
+    assert(threw, "Revoked session must throw UNAUTHORIZED_NO_VALID_SESSION");
+
+    // Reconnect recovery
+    tokenVault.saveTokens({
+      userId: testUserId,
+      email: testUserEmail,
+      name: "Alex Product",
+      displayName: "Alex Product",
+      accessToken: "ya29.reconnected_token",
+      refreshToken: "1//refresh_reconnected",
+      expiresInSeconds: 3600,
+      scopes: ["openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/calendar.events.readonly"],
+    });
+
+    const recovered = await calendarService.fetchUpcomingEvents(testUserId);
+    assert(Boolean(recovered), "Recovered calendar must return events");
+  });
+
+  // Test 10: Unauthenticated User Isolation
   await runTest("Security & Isolation: Unauthenticated user without TokenVault session throws UNAUTHORIZED_NO_VALID_SESSION", async () => {
     let threw = false;
     try {

@@ -81,24 +81,13 @@ export const DEMO_DETECTED_MEETINGS: DetectedMeeting[] = [
   },
 ];
 
+const getCalendarStorageKey = (uid?: string | null) => (uid ? `noteflow:calendar:${uid}` : null);
+const getMeetingsStorageKey = (uid?: string | null) => (uid ? `noteflow:meetings:${uid}` : null);
+const getDetectionStorageKey = (uid?: string | null) => (uid ? `noteflow:detection:${uid}` : null);
+
 export function useMeetRecord(isDemoMode = false, userEmail?: string | null, userId?: string | null) {
   const [calendarState, setCalendarState] = useState<CalendarConnectionState>(() => {
-    try {
-      const saved = localStorage.getItem(CALENDAR_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        // Only restore connection if saved account matches currently authenticated user
-        if (!userEmail || !parsed.accountEmail || parsed.accountEmail.toLowerCase() === userEmail.toLowerCase()) {
-          return {
-            ...parsed,
-            status: parsed.status || (parsed.isConnected ? "CONNECTED" : "NOT_CONNECTED"),
-          };
-        }
-      }
-    } catch (e) {
-      console.error("Failed to load calendar state", e);
-    }
-    // Production default: UNCONNECTED calendar
+    // Production default: clean UNCONNECTED calendar
     if (isDemoMode) {
       return {
         isConnected: true,
@@ -107,6 +96,27 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
         lastSyncedAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       };
     }
+
+    if (userId) {
+      try {
+        const userKey = getCalendarStorageKey(userId);
+        if (userKey) {
+          const saved = localStorage.getItem(userKey);
+          if (saved) {
+            const parsed = JSON.parse(saved);
+            if (!userEmail || !parsed.accountEmail || parsed.accountEmail.toLowerCase() === userEmail.toLowerCase()) {
+              return {
+                ...parsed,
+                status: parsed.status || (parsed.isConnected ? "CONNECTED" : "NOT_CONNECTED"),
+              };
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Failed to load user-scoped calendar state", e);
+      }
+    }
+
     return {
       isConnected: false,
       status: "NOT_CONNECTED",
@@ -116,14 +126,19 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
   });
 
   const [detectedMeetings, setDetectedMeetings] = useState<DetectedMeeting[]>(() => {
-    try {
-      const saved = localStorage.getItem(DETECTED_MEETINGS_KEY);
-      if (saved) return JSON.parse(saved);
-    } catch (e) {
-      console.error("Failed to load detected meetings", e);
+    if (isDemoMode) return DEMO_DETECTED_MEETINGS;
+    if (userId) {
+      try {
+        const userKey = getMeetingsStorageKey(userId);
+        if (userKey) {
+          const saved = localStorage.getItem(userKey);
+          if (saved) return JSON.parse(saved);
+        }
+      } catch (e) {
+        console.error("Failed to load user-scoped detected meetings", e);
+      }
     }
-    // Production default: empty list until calendar is synced
-    return isDemoMode ? DEMO_DETECTED_MEETINGS : [];
+    return [];
   });
 
   // Meeting Detection Policy & Lifecycle State
@@ -155,22 +170,28 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [audioPowerLevel, setAudioPowerLevel] = useState<number>(0);
 
-  // Sync state changes to storage
+  // Sync state changes to user-scoped storage
   useEffect(() => {
     try {
-      localStorage.setItem(CALENDAR_STORAGE_KEY, JSON.stringify(calendarState));
+      const userKey = getCalendarStorageKey(userId);
+      if (userKey) {
+        localStorage.setItem(userKey, JSON.stringify(calendarState));
+      }
     } catch (e) {
       console.error("Failed to save calendar state", e);
     }
-  }, [calendarState]);
+  }, [calendarState, userId]);
 
   useEffect(() => {
     try {
-      localStorage.setItem(DETECTED_MEETINGS_KEY, JSON.stringify(detectedMeetings));
+      const userKey = getMeetingsStorageKey(userId);
+      if (userKey) {
+        localStorage.setItem(userKey, JSON.stringify(detectedMeetings));
+      }
     } catch (e) {
       console.error("Failed to save detected meetings", e);
     }
-  }, [detectedMeetings]);
+  }, [detectedMeetings, userId]);
 
   useEffect(() => {
     try {
@@ -188,13 +209,24 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
     }
   }, [detectionState]);
 
-  // Initial check on mount: verify calendar token health if previously connected
+  // Backend Authority: Synchronize calendar connection state on mount or user switch
   useEffect(() => {
-    async function checkCalendarHealthOnMount() {
-      if (isDemoMode || !calendarState.isConnected) return;
+    let isMounted = true;
 
-      // If calendar account does not match active authenticated user, reset to NOT_CONNECTED
-      if (userEmail && calendarState.accountEmail && calendarState.accountEmail.toLowerCase() !== userEmail.toLowerCase()) {
+    async function syncBackendCalendarState() {
+      if (isDemoMode) {
+        setCalendarState({
+          isConnected: true,
+          status: "CONNECTED",
+          accountEmail: userEmail || "alex.product@acme-corp.internal",
+          lastSyncedAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          errorMessage: null,
+        });
+        setDetectedMeetings(DEMO_DETECTED_MEETINGS);
+        return;
+      }
+
+      if (!userId) {
         setCalendarState({
           isConnected: false,
           status: "NOT_CONNECTED",
@@ -207,40 +239,62 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
       }
 
       try {
-        const check = await apiClient.fetchCalendarEvents();
-        if (check.error === "CALENDAR_NOT_AUTHORIZED") {
-          // Normal un-connected state for fresh user: do not show scary revoked/error banner
-          setCalendarState({
+        // Query authoritative backend status
+        const statusRes = await apiClient.getCalendarStatus();
+        if (!isMounted) return;
+
+        if (statusRes.connected) {
+          const syncTime = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+          const connectedState: CalendarConnectionState = {
+            isConnected: true,
+            status: "CONNECTED",
+            accountEmail: statusRes.accountEmail || userEmail || null,
+            lastSyncedAt: syncTime,
+            errorMessage: null,
+          };
+          setCalendarState(connectedState);
+          const key = getCalendarStorageKey(userId);
+          if (key) localStorage.setItem(key, JSON.stringify(connectedState));
+
+          // Safe to fetch events now that backend confirmed calendar scope
+          const check = await apiClient.fetchCalendarEvents();
+          if (!isMounted) return;
+
+          if (check.success && Array.isArray(check.events)) {
+            setDetectedMeetings(check.events);
+          } else if (check.error === "CALENDAR_PERMISSION_REVOKED" || check.error === "CALENDAR_TOKEN_EXPIRED") {
+            setCalendarState((prev) => ({
+              ...prev,
+              isConnected: false,
+              status: "REAUTH_REQUIRED",
+              errorMessage: "Google Calendar authorization was revoked or expired. Please reconnect.",
+            }));
+          }
+        } else {
+          // Not connected on backend: guarantee clean NOT_CONNECTED state without calling /events
+          const unconnState: CalendarConnectionState = {
             isConnected: false,
             status: "NOT_CONNECTED",
             accountEmail: null,
             lastSyncedAt: null,
             errorMessage: null,
-          });
+          };
+          setCalendarState(unconnState);
           setDetectedMeetings([]);
-        } else if (check.error === "CALENDAR_PERMISSION_REVOKED" || check.error === "CALENDAR_TOKEN_EXPIRED") {
-          console.warn("[useMeetRecord] Google Calendar authorization was revoked or expired.");
-          setCalendarState((prev) => ({
-            ...prev,
-            isConnected: false,
-            status: "REAUTH_REQUIRED",
-            errorMessage: "Google Calendar access was revoked. Please reconnect.",
-          }));
-        } else if (check.success && Array.isArray(check.events)) {
-          setDetectedMeetings(check.events);
-          setCalendarState((prev) => ({
-            ...prev,
-            status: "CONNECTED",
-            lastSyncedAt: check.lastSyncedAt || prev.lastSyncedAt,
-          }));
+          const key = getCalendarStorageKey(userId);
+          if (key) localStorage.setItem(key, JSON.stringify(unconnState));
         }
-      } catch (e) {
-        console.warn("[useMeetRecord] Calendar health check error", e);
+      } catch (err) {
+        console.warn("[useMeetRecord] Backend calendar status check error:", err);
       }
     }
 
-    checkCalendarHealthOnMount();
-  }, [isDemoMode, userEmail, userId]);
+    syncBackendCalendarState();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [userId, userEmail, isDemoMode]);
 
   // 1. Connect Google Calendar
   const connectCalendar = useCallback(async (accountEmail: string) => {
@@ -325,19 +379,19 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
           errorMessage: null,
         };
         setCalendarState(newState);
-        try {
-          localStorage.setItem(CALENDAR_STORAGE_KEY, JSON.stringify(newState));
-        } catch {}
+        const key = getCalendarStorageKey(userId);
+        if (key) localStorage.setItem(key, JSON.stringify(newState));
         setDetectedMeetings(gcalEvents.events);
       } else if (gcalEvents.error === "CALENDAR_NOT_AUTHORIZED") {
+        // User cancelled or denied: remain NOT_CONNECTED with clear message
         setCalendarState({
           isConnected: false,
-          status: "REAUTH_REQUIRED",
-          accountEmail,
+          status: "NOT_CONNECTED",
+          accountEmail: null,
           lastSyncedAt: null,
-          errorMessage: "Google Calendar access was not granted. Please click Connect Google Calendar to grant permission.",
+          errorMessage: "Google Calendar access was not granted. Please click Connect Google Calendar to try again.",
         });
-        setCalendarError("Google Calendar access was not granted. Please click Connect Google Calendar to grant permission.");
+        setCalendarError("Google Calendar access was not granted. Please click Connect Google Calendar to try again.");
       } else if (gcalEvents.error === "CALENDAR_PERMISSION_REVOKED") {
         setCalendarState({
           isConnected: false,
@@ -347,7 +401,7 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
           errorMessage: "Google Calendar access was revoked. Please reconnect.",
         });
         setCalendarError("Google Calendar access was revoked. Please reconnect.");
-      } else if (gcalEvents.requiresReconnect) {
+      } else if (gcalEvents.error === "CALENDAR_TOKEN_EXPIRED") {
         setCalendarState({
           isConnected: false,
           status: "REAUTH_REQUIRED",
@@ -380,7 +434,7 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
     } finally {
       setIsSyncingCalendar(false);
     }
-  }, [isDemoMode]);
+  }, [isDemoMode, userId]);
 
   // 2. Disconnect Google Calendar
   const disconnectCalendar = useCallback(() => {
@@ -398,14 +452,18 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
     setDetectionState("not_enabled");
 
     try {
+      const calKey = getCalendarStorageKey(userId);
+      const meetKey = getMeetingsStorageKey(userId);
+      if (calKey) localStorage.removeItem(calKey);
+      if (meetKey) localStorage.removeItem(meetKey);
       localStorage.removeItem(CALENDAR_STORAGE_KEY);
       localStorage.removeItem(DETECTED_MEETINGS_KEY);
       localStorage.removeItem(DETECTION_ENABLED_KEY);
       localStorage.removeItem(DETECTION_STATE_KEY);
     } catch (e) {
-      console.error("Failed to purge calendar storage", e);
+      console.error("Failed to clear calendar storage", e);
     }
-  }, []);
+  }, [userId]);
 
   // 3. Meeting Detection Handlers
   const enableMeetingDetection = useCallback(async (): Promise<boolean> => {

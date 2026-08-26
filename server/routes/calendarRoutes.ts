@@ -1,5 +1,6 @@
 import { Router, Request, Response } from "express";
 import { calendarService } from "../services/calendarService.js";
+import { tokenVault } from "../security/tokenVault.js";
 import { requireAuth } from "../middleware/authMiddleware.js";
 
 export const calendarRouter = Router();
@@ -10,6 +11,23 @@ const authErrors = [
   "CALENDAR_PERMISSION_REVOKED",
   "CALENDAR_TOKEN_EXPIRED",
 ];
+
+/**
+ * GET /api/calendar/status
+ * Returns authoritative backend calendar connection state for the authenticated user.
+ */
+calendarRouter.get("/status", requireAuth, (req: Request, res: Response) => {
+  const userId = req.user?.userId || "user_default_workspace_id";
+  const session = tokenVault.getSafeSession(userId);
+  const connected = Boolean(session && session.scopes?.some((s: string) => s.includes("calendar")));
+
+  res.json({
+    success: true,
+    connected,
+    accountEmail: session?.email || null,
+    scopes: session?.scopes || [],
+  });
+});
 
 /**
  * GET /api/calendar/events

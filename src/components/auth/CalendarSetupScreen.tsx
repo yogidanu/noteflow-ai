@@ -62,59 +62,78 @@ export const CalendarSetupScreen: React.FC<CalendarSetupScreenProps> = ({
 
             <div className="space-y-1">
               <h1 className="text-xl sm:text-2xl font-bold text-[var(--text-primary)] tracking-tight">
-                {isReauth ? "Reconnect Google Calendar" : "Connect Google Calendar"}
+                {status === "CONNECTED"
+                  ? "Google Calendar connected"
+                  : isReauth
+                  ? "Reconnect Google Calendar"
+                  : isError
+                  ? "We couldn't connect your calendar"
+                  : "Connect Google Calendar"}
               </h1>
               <p className="text-xs sm:text-sm text-[var(--text-secondary)] leading-relaxed max-w-sm mx-auto">
-                {isReauth
-                  ? "Google Calendar authorization was revoked or expired. Please re-authenticate to continue."
-                  : "NoteFlow AI needs read-only access to your calendar to detect upcoming Google Meet calls."}
+                {status === "CONNECTED"
+                  ? "Your calendar is active. NoteFlow AI can now detect upcoming Google Meet meetings."
+                  : isReauth
+                  ? "Your Google Calendar authorization needs to be renewed."
+                  : isError
+                  ? "Please verify your permissions or try connecting again."
+                  : "Connect your calendar so NoteFlow can detect upcoming meetings."}
               </p>
             </div>
           </div>
 
-          {/* Explicit Architectural Notice */}
-          <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-800 dark:text-amber-300 flex items-start gap-2.5">
-            <Info className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" aria-hidden="true" />
-            <div>
-              <span className="font-semibold">Google Sign-in ≠ Google Calendar Access:</span>
-              <p className="text-[11px] mt-0.5 opacity-90">
-                Your sign-in identity did not grant calendar access. We request explicit authorization with minimal read-only permissions.
-              </p>
+          {status === "CONNECTED" ? (
+            <div className="p-4 rounded-2xl bg-[var(--color-success-subtle,rgba(34,197,94,0.1))] border border-[var(--color-success,rgba(34,197,94,0.3))] flex items-center justify-center gap-2 text-[var(--color-success,#16a34a)] text-sm font-semibold">
+              <CheckCircle2 className="w-5 h-5" aria-hidden="true" />
+              <span>✓ Google Calendar Connected</span>
             </div>
-          </div>
-
-          {/* Minimal Scope & Permissions Matrix */}
-          <div className="space-y-2.5">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)] font-mono">
-              Permissions & Boundaries
-            </div>
-
-            <div className="p-3.5 rounded-2xl bg-[var(--surface-subtle)] border border-[var(--border-subtle)] space-y-2.5 text-xs">
-              <div className="flex items-start gap-2 text-[var(--text-primary)]">
-                <Check className="w-4 h-4 text-[var(--color-success)] shrink-0 mt-0.5" aria-hidden="true" />
+          ) : (
+            <>
+              {/* Explicit Architectural Notice */}
+              <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-800 dark:text-amber-300 flex items-start gap-2.5">
+                <Info className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" aria-hidden="true" />
                 <div>
-                  <span className="font-medium">Read upcoming meeting schedules</span>
-                  <p className="text-[11px] text-[var(--text-muted)]">Event title, start/end time, and Google Meet URL</p>
+                  <span className="font-semibold">Google Sign-in ≠ Google Calendar Access:</span>
+                  <p className="text-[11px] mt-0.5 opacity-90">
+                    Your sign-in identity did not grant calendar access. We request explicit authorization with minimal read-only permissions.
+                  </p>
                 </div>
               </div>
 
-              <div className="flex items-start gap-2 text-[var(--text-primary)]">
-                <Check className="w-4 h-4 text-[var(--color-success)] shrink-0 mt-0.5" aria-hidden="true" />
-                <div>
-                  <span className="font-medium">Minimal read-only scope</span>
-                  <p className="text-[11px] text-[var(--text-muted)] font-mono text-[10px]">https://www.googleapis.com/auth/calendar.events.readonly</p>
+              {/* Minimal Scope & Permissions Matrix */}
+              <div className="space-y-2.5">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)] font-mono">
+                  Permissions & Boundaries
+                </div>
+
+                <div className="p-3.5 rounded-2xl bg-[var(--surface-subtle)] border border-[var(--border-subtle)] space-y-2.5 text-xs">
+                  <div className="flex items-start gap-2 text-[var(--text-primary)]">
+                    <Check className="w-4 h-4 text-[var(--color-success)] shrink-0 mt-0.5" aria-hidden="true" />
+                    <div>
+                      <span className="font-medium">Read upcoming meeting schedules</span>
+                      <p className="text-[11px] text-[var(--text-muted)]">Event title, start/end time, and Google Meet URL</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-2 text-[var(--text-primary)]">
+                    <Check className="w-4 h-4 text-[var(--color-success)] shrink-0 mt-0.5" aria-hidden="true" />
+                    <div>
+                      <span className="font-medium">Minimal read-only scope</span>
+                      <p className="text-[11px] text-[var(--text-muted)] font-mono text-[10px]">https://www.googleapis.com/auth/calendar.events.readonly</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-2 text-[var(--text-muted)] pt-1 border-t border-[var(--border-subtle)]">
+                    <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" aria-hidden="true" />
+                    <span className="text-[11px]">Cannot edit, delete, or create calendar events</span>
+                  </div>
                 </div>
               </div>
-
-              <div className="flex items-start gap-2 text-[var(--text-muted)] pt-1 border-t border-[var(--border-subtle)]">
-                <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" aria-hidden="true" />
-                <span className="text-[11px]">Cannot edit, delete, or create calendar events</span>
-              </div>
-            </div>
-          </div>
+            </>
+          )}
 
           {/* Error Banner */}
-          {error && (
+          {error && status !== "CONNECTED" && (
             <div
               role="alert"
               aria-live="assertive"
@@ -131,13 +150,18 @@ export const CalendarSetupScreen: React.FC<CalendarSetupScreenProps> = ({
               onClick={handleConnect}
               disabled={isConnecting}
               aria-busy={isConnecting}
-              aria-label={isConnecting ? "Authorizing with Google Calendar..." : isReauth ? "Reconnect Google Calendar" : isError ? "Try Again" : "Connect Google Calendar"}
+              aria-label={isConnecting ? "Authorizing with Google Calendar..." : status === "CONNECTED" ? "Continue to Next Step" : isReauth ? "Reconnect Google Calendar" : isError ? "Try Again" : "Connect Google Calendar"}
               className="w-full h-12 px-4 rounded-xl bg-[var(--primary-action)] hover:bg-[var(--primary-hover)] active:scale-[0.985] text-white text-xs sm:text-sm font-semibold flex items-center justify-center gap-2 shadow-xs transition-all cursor-pointer disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-[var(--border-focus)] outline-none"
             >
               {isConnecting ? (
                 <>
                   <RefreshCw className="w-4 h-4 animate-spin" aria-hidden="true" />
                   <span aria-live="polite">Authorizing with Google...</span>
+                </>
+              ) : status === "CONNECTED" ? (
+                <>
+                  <span>Continue to Next Step</span>
+                  <ArrowRight className="w-4 h-4" aria-hidden="true" />
                 </>
               ) : isReauth ? (
                 <>
@@ -160,7 +184,7 @@ export const CalendarSetupScreen: React.FC<CalendarSetupScreenProps> = ({
               )}
             </button>
 
-            {onSkip && (
+            {onSkip && status !== "CONNECTED" && (
               <button
                 onClick={onSkip}
                 disabled={isConnecting}
