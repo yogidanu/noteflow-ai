@@ -81,16 +81,19 @@ export const DEMO_DETECTED_MEETINGS: DetectedMeeting[] = [
   },
 ];
 
-export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
+export function useMeetRecord(isDemoMode = false, userEmail?: string | null, userId?: string | null) {
   const [calendarState, setCalendarState] = useState<CalendarConnectionState>(() => {
     try {
       const saved = localStorage.getItem(CALENDAR_STORAGE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        return {
-          ...parsed,
-          status: parsed.status || (parsed.isConnected ? "CONNECTED" : "NOT_CONNECTED"),
-        };
+        // Only restore connection if saved account matches currently authenticated user
+        if (!userEmail || !parsed.accountEmail || parsed.accountEmail.toLowerCase() === userEmail.toLowerCase()) {
+          return {
+            ...parsed,
+            status: parsed.status || (parsed.isConnected ? "CONNECTED" : "NOT_CONNECTED"),
+          };
+        }
       }
     } catch (e) {
       console.error("Failed to load calendar state", e);
@@ -190,9 +193,32 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
     async function checkCalendarHealthOnMount() {
       if (isDemoMode || !calendarState.isConnected) return;
 
+      // If calendar account does not match active authenticated user, reset to NOT_CONNECTED
+      if (userEmail && calendarState.accountEmail && calendarState.accountEmail.toLowerCase() !== userEmail.toLowerCase()) {
+        setCalendarState({
+          isConnected: false,
+          status: "NOT_CONNECTED",
+          accountEmail: null,
+          lastSyncedAt: null,
+          errorMessage: null,
+        });
+        setDetectedMeetings([]);
+        return;
+      }
+
       try {
         const check = await apiClient.fetchCalendarEvents();
-        if (check.requiresReconnect) {
+        if (check.error === "CALENDAR_NOT_AUTHORIZED") {
+          // Normal un-connected state for fresh user: do not show scary revoked/error banner
+          setCalendarState({
+            isConnected: false,
+            status: "NOT_CONNECTED",
+            accountEmail: null,
+            lastSyncedAt: null,
+            errorMessage: null,
+          });
+          setDetectedMeetings([]);
+        } else if (check.error === "CALENDAR_PERMISSION_REVOKED" || check.error === "CALENDAR_TOKEN_EXPIRED") {
           console.warn("[useMeetRecord] Google Calendar authorization was revoked or expired.");
           setCalendarState((prev) => ({
             ...prev,
@@ -214,7 +240,7 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null) {
     }
 
     checkCalendarHealthOnMount();
-  }, [isDemoMode]);
+  }, [isDemoMode, userEmail, userId]);
 
   // 1. Connect Google Calendar
   const connectCalendar = useCallback(async (accountEmail: string) => {

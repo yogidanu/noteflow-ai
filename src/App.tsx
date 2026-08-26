@@ -93,7 +93,7 @@ export function App() {
     stopRecording,
     quickJoinUrl,
     retryMeeting,
-  } = useMeetRecord(isDemoMode, user?.email);
+  } = useMeetRecord(isDemoMode, user?.email, user?.id);
 
   // Onboarding Step Flow Progression (Transient skips for optional steps)
   const [skippedCalendar, setSkippedCalendar] = useState(false);

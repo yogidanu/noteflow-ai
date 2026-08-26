@@ -425,6 +425,8 @@ export function useAuth() {
       localStorage.removeItem(AUTH_STORAGE_KEY);
       localStorage.removeItem(DEMO_MODE_KEY);
       localStorage.removeItem(ONBOARDING_COMPLETE_KEY);
+      localStorage.removeItem("noteflow_calendar_connection");
+      localStorage.removeItem("noteflow_detected_meetings");
 
       if (desktopBridge.isDesktop()) {
         await desktopBridge.logout();
