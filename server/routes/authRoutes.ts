@@ -293,9 +293,14 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
       }
     }
 
-    // Deterministic identity fallback: never silently invent a random user
+    // Require valid verified email from Google OAuth
     if (!userEmail) {
-      userEmail = (req.query?.email as string) || "user@workspace.design";
+      userEmail = (req.query?.email as string) || "";
+    }
+
+    if (!userEmail) {
+      console.error("[OAuth DEBUG] Fatal: Google OAuth did not return a valid user email. Token exchange may have failed.");
+      return res.redirect(`${config.frontendUrl}?error=GOOGLE_AUTHENTICATION_FAILED`);
     }
 
     if (!userName) {

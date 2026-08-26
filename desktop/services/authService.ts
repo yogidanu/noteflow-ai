@@ -132,8 +132,8 @@ export class AuthService {
       const errorParam = parsedUrl.searchParams.get("error");
       const authCode = parsedUrl.searchParams.get("code");
       const returnedState = parsedUrl.searchParams.get("state");
-      const email = parsedUrl.searchParams.get("email") || "user@workspace.design";
-      const name = parsedUrl.searchParams.get("name") || "Workspace Member";
+      const email = parsedUrl.searchParams.get("email") || "";
+      const name = parsedUrl.searchParams.get("name") || "";
 
       // 1. Handle User Cancellation
       if (errorParam === "access_denied" || errorParam === "user_cancelled" || errorParam === "cancelled") {
