@@ -14,9 +14,28 @@ export class MeetRecordApiClient {
     this.currentUserName = name || null;
   }
 
-  private getAuthHeaders(customHeaders: Record<string, string> = {}): Record<string, string> {
+  private getAuthHeaders(customHeaders: Record<string, string> = {}, explicitUserId?: string | null): Record<string, string> {
     const headers: Record<string, string> = { ...customHeaders };
-    if (this.currentUserId) headers["x-user-id"] = this.currentUserId;
+    
+    // Auto-hydrate session context from localStorage if in-memory state is empty (e.g. during page reload)
+    if (!this.currentUserId && typeof window !== "undefined") {
+      try {
+        const saved = localStorage.getItem("noteflow_auth_session_v1");
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed?.id) {
+            this.currentUserId = parsed.id;
+            this.currentUserEmail = parsed.email || null;
+            this.currentUserName = parsed.name || null;
+          }
+        }
+      } catch {
+        // ignore parse errors
+      }
+    }
+
+    const effectiveUserId = explicitUserId || this.currentUserId;
+    if (effectiveUserId) headers["x-user-id"] = effectiveUserId;
     if (this.currentUserEmail) headers["x-user-email"] = this.currentUserEmail;
     if (this.currentUserName) headers["x-user-name"] = this.currentUserName;
     return headers;
@@ -292,7 +311,7 @@ export class MeetRecordApiClient {
   /**
    * Queries authoritative backend calendar connection state.
    */
-  public async getCalendarStatus(): Promise<{
+  public async getCalendarStatus(userId?: string | null): Promise<{
     connected: boolean;
     accountEmail?: string | null;
     scopes?: string[];
@@ -302,7 +321,7 @@ export class MeetRecordApiClient {
       if (!available) return { connected: false };
 
       const res = await fetch(getApiEndpoint("/calendar/status"), {
-        headers: this.getAuthHeaders(),
+        headers: this.getAuthHeaders({}, userId),
       });
       if (!res.ok) return { connected: false };
 
@@ -320,7 +339,7 @@ export class MeetRecordApiClient {
   /**
    * Fetches detected upcoming meetings from backend.
    */
-  public async fetchCalendarEvents(): Promise<{
+  public async fetchCalendarEvents(userId?: string | null): Promise<{
     success: boolean;
     events: DetectedMeeting[];
     accountEmail?: string;
@@ -333,7 +352,7 @@ export class MeetRecordApiClient {
       if (!available) return { success: false, events: [], error: "BACKEND_UNAVAILABLE" };
 
       const res = await fetch(getApiEndpoint("/calendar/events"), {
-        headers: this.getAuthHeaders(),
+        headers: this.getAuthHeaders({}, userId),
       });
       const json = await res.json().catch(() => null);
 
@@ -370,7 +389,7 @@ export class MeetRecordApiClient {
   /**
    * Triggers manual calendar sync on backend.
    */
-  public async syncCalendar(): Promise<{
+  public async syncCalendar(userId?: string | null): Promise<{
     success: boolean;
     events: DetectedMeeting[];
     lastSyncedAt?: string;
@@ -383,7 +402,7 @@ export class MeetRecordApiClient {
 
       const res = await fetch(getApiEndpoint("/calendar/sync"), {
         method: "POST",
-        headers: this.getAuthHeaders(),
+        headers: this.getAuthHeaders({}, userId),
       });
       const json = await res.json().catch(() => null);
 

@@ -239,8 +239,8 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
       }
 
       try {
-        // Query authoritative backend status
-        const statusRes = await apiClient.getCalendarStatus();
+        // Query authoritative backend status with explicit userId
+        const statusRes = await apiClient.getCalendarStatus(userId);
         if (!isMounted) return;
 
         if (statusRes.connected) {
@@ -257,7 +257,7 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
           if (key) localStorage.setItem(key, JSON.stringify(connectedState));
 
           // Safe to fetch events now that backend confirmed calendar scope
-          const check = await apiClient.fetchCalendarEvents();
+          const check = await apiClient.fetchCalendarEvents(userId);
           if (!isMounted) return;
 
           if (check.success && Array.isArray(check.events)) {
@@ -368,7 +368,7 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
       await new Promise((r) => setTimeout(r, 400));
 
       // 2. Query authoritative backend calendar status
-      const statusCheck = await apiClient.getCalendarStatus();
+      const statusCheck = await apiClient.getCalendarStatus(userId);
 
       if (statusCheck.connected) {
         const syncTime = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -384,7 +384,7 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
         if (key) localStorage.setItem(key, JSON.stringify(newState));
 
         // Safe to fetch real calendar meetings after backend confirmed calendar scope
-        const gcalEvents = await apiClient.fetchCalendarEvents();
+        const gcalEvents = await apiClient.fetchCalendarEvents(userId);
         if (gcalEvents.success && Array.isArray(gcalEvents.events)) {
           setDetectedMeetings(gcalEvents.events);
         }
@@ -502,7 +502,7 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
         return;
       }
 
-      const res = await apiClient.syncCalendar();
+      const res = await apiClient.syncCalendar(userId);
       if (res.success && Array.isArray(res.events)) {
         setDetectedMeetings(res.events);
         setCalendarState((prev) => ({
