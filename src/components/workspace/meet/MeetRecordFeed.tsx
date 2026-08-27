@@ -417,19 +417,30 @@ export const MeetRecordFeed: React.FC<MeetRecordFeedProps> = ({
                         <span>Record Now</span>
                       </button>
                     ) : isScheduled ? (
-                      <button
-                        onClick={() => onToggleRecording(meeting.id, false)}
-                        className="h-8 px-3.5 rounded-xl bg-[var(--primary-action)] text-white text-xs font-semibold flex items-center gap-1.5 hover:opacity-90 transition-all shadow-xs cursor-pointer"
-                      >
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        <span>Opted In</span>
-                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => onStartLiveRecording(meeting.id)}
+                          className="h-8 px-3.5 rounded-xl bg-[var(--color-success)] text-white text-xs font-semibold flex items-center gap-1.5 hover:opacity-90 transition-all shadow-xs cursor-pointer"
+                          title="Start recording this meeting now"
+                        >
+                          <Radio className="w-3.5 h-3.5" />
+                          <span>Start Recording</span>
+                        </button>
+                        <button
+                          onClick={() => onToggleRecording(meeting.id, false)}
+                          className="h-8 px-2.5 rounded-xl bg-[var(--surface-subtle)] hover:bg-[var(--surface-card)] border border-[var(--border-default)] text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors cursor-pointer"
+                          title="Cancel auto-record opt-in"
+                        >
+                          Opted In
+                        </button>
+                      </div>
                     ) : (
                       <button
-                        onClick={() => onOpenConfirmModal(meeting)}
-                        className="h-8 px-3.5 rounded-xl bg-[var(--surface-card)] hover:bg-[var(--primary-action)] text-[var(--text-secondary)] hover:text-white border border-[var(--border-default)] hover:border-[var(--primary-action)] text-xs font-semibold flex items-center gap-1.5 transition-all shadow-2xs cursor-pointer"
+                        onClick={() => onStartLiveRecording(meeting.id)}
+                        className="h-8 px-3.5 rounded-xl bg-[var(--color-success)] text-white text-xs font-semibold flex items-center gap-1.5 hover:opacity-90 transition-all shadow-xs cursor-pointer"
                       >
-                        <span>Opt-In Recording</span>
+                        <Radio className="w-3.5 h-3.5" />
+                        <span>Start Recording</span>
                       </button>
                     )}
                   </div>
