@@ -325,7 +325,7 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
         const left = window.screenX + (window.outerWidth - width) / 2;
         const top = window.screenY + (window.outerHeight - height) / 2.5;
 
-        // COOP-Safe Listener for popup message broadcast
+        // COOP-Safe Listener for popup message broadcast & window focus return
         let messageResolved = false;
         const messagePromise = new Promise<void>((resolve) => {
           const handler = (evt: MessageEvent) => {
@@ -345,22 +345,24 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
         );
 
         if (popup) {
-          const pollPromise = new Promise<void>((resolve) => {
-            const checkTimer = window.setInterval(() => {
-              try {
-                if (messageResolved || popup.closed) {
-                  window.clearInterval(checkTimer);
-                  resolve();
-                }
-              } catch {
-                // Cross-Origin-Opener-Policy may throw when inspecting popup.closed; handle gracefully
-                window.clearInterval(checkTimer);
+          const focusPromise = new Promise<void>((resolve) => {
+            const onFocus = () => {
+              // Delay slightly to let callback commit
+              setTimeout(() => {
+                window.removeEventListener("focus", onFocus);
                 resolve();
-              }
-            }, 600);
+              }, 800);
+            };
+            window.addEventListener("focus", onFocus);
+
+            // Timeout safety fallback (60 seconds)
+            setTimeout(() => {
+              window.removeEventListener("focus", onFocus);
+              resolve();
+            }, 60000);
           });
 
-          await Promise.race([messagePromise, pollPromise]);
+          await Promise.race([messagePromise, focusPromise]);
         }
       }
 

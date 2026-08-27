@@ -190,13 +190,29 @@ export class CalendarService {
           timeMax.toISOString()
         )}&singleEvents=true&orderBy=startTime&conferenceDataVersion=1`;
 
-        const res = await fetch(gcalUrl, {
+        let res = await fetch(gcalUrl, {
           headers: {
             Authorization: `Bearer ${accessToken}`,
             Accept: "application/json",
           },
           signal: AbortSignal.timeout(6000),
         });
+
+        // Automatic Token Recovery: If Google rejects the access token with 401/403, attempt a refresh with the stored refresh token
+        if ((res.status === 401 || res.status === 403) && tokens.refreshToken) {
+          console.warn("[CalendarService] Google Calendar API returned", res.status, "- attempting automatic token refresh");
+          const refreshed = await this.refreshAccessToken(userId, tokens.refreshToken);
+          if (refreshed) {
+            accessToken = refreshed;
+            res = await fetch(gcalUrl, {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                Accept: "application/json",
+              },
+              signal: AbortSignal.timeout(6000),
+            });
+          }
+        }
 
         if (res.status === 401 || res.status === 403) {
           throw new Error("CALENDAR_PERMISSION_REVOKED");
