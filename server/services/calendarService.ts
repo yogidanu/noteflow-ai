@@ -180,15 +180,14 @@ export class CalendarService {
 
     if (isLiveProduction && accessToken) {
       try {
-        const todayStart = new Date();
-        todayStart.setHours(0, 0, 0, 0);
-        const todayEnd = new Date();
-        todayEnd.setHours(23, 59, 59, 999);
+        // Query window: from 24 hours ago through the next 7 days to cover all timezones & upcoming schedules
+        const timeMin = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        const timeMax = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
         const gcalUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(
-          todayStart.toISOString()
+          timeMin.toISOString()
         )}&timeMax=${encodeURIComponent(
-          todayEnd.toISOString()
+          timeMax.toISOString()
         )}&singleEvents=true&orderBy=startTime&conferenceDataVersion=1`;
 
         const res = await fetch(gcalUrl, {
@@ -196,7 +195,7 @@ export class CalendarService {
             Authorization: `Bearer ${accessToken}`,
             Accept: "application/json",
           },
-          signal: AbortSignal.timeout(5000),
+          signal: AbortSignal.timeout(6000),
         });
 
         if (res.status === 401 || res.status === 403) {
@@ -208,10 +207,11 @@ export class CalendarService {
           const items = gcalData.items || [];
 
           for (const evt of items) {
-            const entryUri = extractMeetingUri(evt);
-            if (!entryUri) continue;
+            // Ignore transparent / free background blocks if cancelled
+            if (evt.status === "cancelled") continue;
 
-            const resolved = platformRegistry.resolve(entryUri);
+            const entryUri = extractMeetingUri(evt);
+            const resolved = entryUri ? platformRegistry.resolve(entryUri) : { platform: "google_meet" as const, canonicalUrl: "", dedupHash: `local_${evt.id}` };
 
             const attendees: CalendarAttendee[] = (evt.attendees || []).map((a: any) => ({
               name: a.displayName || a.email.split("@")[0],
@@ -219,7 +219,7 @@ export class CalendarService {
               rsvp: a.responseStatus === "accepted" ? "accepted" : a.responseStatus === "declined" ? "declined" : "tentative",
             }));
 
-            // Skip declined events
+            // Skip explicitly declined events
             const userAttendee = attendees.find((a) => a.email.toLowerCase() === session.email.toLowerCase());
             if (userAttendee && userAttendee.rsvp === "declined") {
               continue;
@@ -247,7 +247,7 @@ export class CalendarService {
             standardizedEvents.push({
               id: `meet-event-${evt.id}`,
               calendarEventId: evt.id,
-              title: evt.summary || "Untitled Meeting",
+              title: evt.summary || "Scheduled Calendar Event",
               startTime: startTimeFormatted,
               endTime: endTimeFormatted,
               startIso: startStr,
@@ -258,10 +258,10 @@ export class CalendarService {
               isExternalHost,
               attendees,
               platform: resolved.platform,
-              meetingUrl: resolved.canonicalUrl || entryUri,
+              meetingUrl: resolved.canonicalUrl || entryUri || "",
               status,
               recordingStatus: "off",
-              dedupHash: resolved.dedupHash,
+              dedupHash: resolved.dedupHash || `hash_${evt.id}`,
             });
           }
         }
