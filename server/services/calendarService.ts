@@ -215,6 +215,12 @@ export class CalendarService {
         }
 
         if (res.status === 401 || res.status === 403) {
+          const errBody = await res.text();
+          console.error("[CalendarService] Google Calendar API query rejected by Google:", {
+            status: res.status,
+            userId,
+            responseSnippet: errBody.substring(0, 400),
+          });
           throw new Error("CALENDAR_PERMISSION_REVOKED");
         }
 
