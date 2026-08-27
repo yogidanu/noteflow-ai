@@ -337,7 +337,15 @@ export const MeetRecordFeed: React.FC<MeetRecordFeedProps> = ({
 
                       <span className="text-xs text-[var(--text-muted)] flex items-center gap-1 font-mono">
                         <Clock className="w-3 h-3" />
-                        <span>{meeting.startTime} - {meeting.endTime}</span>
+                        <span>
+                          {meeting.startIso
+                            ? new Date(meeting.startIso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true })
+                            : meeting.startTime}
+                          {" - "}
+                          {meeting.endIso
+                            ? new Date(meeting.endIso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", hour12: true })
+                            : meeting.endTime}
+                        </span>
                       </span>
                       {meeting.isExternalHost && (
                         <span className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--warning-surface)] text-[var(--color-warning)] border border-[var(--warning-border)] font-medium">
@@ -398,7 +406,15 @@ export const MeetRecordFeed: React.FC<MeetRecordFeedProps> = ({
                         className="h-8 px-3.5 rounded-xl bg-[var(--success-surface)] text-[var(--color-success)] border border-[var(--success-border)] text-xs font-semibold flex items-center gap-1.5 opacity-90 cursor-not-allowed"
                       >
                         <Radio className="w-3.5 h-3.5 animate-pulse" />
-                        <span>In Progress</span>
+                        <span>Recording Active</span>
+                      </button>
+                    ) : meeting.status === "IN_PROGRESS" || meeting.status === "STARTING" ? (
+                      <button
+                        onClick={() => onStartLiveRecording(meeting.id)}
+                        className="h-8 px-3.5 rounded-xl bg-[var(--color-success)] text-white text-xs font-semibold flex items-center gap-1.5 hover:opacity-90 transition-all shadow-xs cursor-pointer animate-pulse"
+                      >
+                        <Radio className="w-3.5 h-3.5" />
+                        <span>Record Now</span>
                       </button>
                     ) : isScheduled ? (
                       <button

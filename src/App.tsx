@@ -563,6 +563,9 @@ export function App() {
         onConfirm={() => {
           if (confirmRecordMeeting) {
             toggleMeetingRecording(confirmRecordMeeting.id, true);
+            if (confirmRecordMeeting.status === "IN_PROGRESS" || confirmRecordMeeting.status === "STARTING") {
+              startLiveRecording(confirmRecordMeeting.id);
+            }
             setConfirmRecordMeeting(null);
           }
         }}
