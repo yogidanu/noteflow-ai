@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "NoteFlow AI — Meeting Ingress & Notetaker",
+  "version": "1.0.0",
+  "description": "Automatic Google Meet detection and 1-click AI note-taking companion for NoteFlow AI.",
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "*://meet.google.com/*",
+    "https://noteflow-ai-cc3p.vercel.app/*",
+    "http://localhost:5173/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://meet.google.com/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "NoteFlow AI Meeting Companion"
+  }
+}
