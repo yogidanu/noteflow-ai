@@ -273,13 +273,23 @@ export class SummaryService {
       }
     });
 
-    // 3. Dynamic Unresolved Questions
+    // 3. Dynamic Unresolved Questions & Parking Lot
     segments.forEach((seg, idx) => {
-      if (seg.text.includes("?") && unresolvedQuestions.length < 5) {
+      const lower = seg.text.toLowerCase();
+      const isQuestionOrPending =
+        seg.text.includes("?") ||
+        lower.includes("not sure") ||
+        lower.includes("need to check") ||
+        lower.includes("unresolved") ||
+        lower.includes("open question") ||
+        lower.includes("look into") ||
+        lower.includes("depends on");
+
+      if (isQuestionOrPending && unresolvedQuestions.length < 5) {
         unresolvedQuestions.push({
           id: `q-dyn-${idx + 1}`,
           question: seg.text.trim(),
-          suggestedFollowUp: `Follow up with ${seg.speaker} to clarify open question.`,
+          suggestedFollowUp: `Follow up with ${seg.speaker || "team"} to clarify open dependency.`,
           citation: {
             id: `cit-q-${idx}`,
             speaker: seg.speaker,
@@ -290,6 +300,22 @@ export class SummaryService {
         });
       }
     });
+
+    if (unresolvedQuestions.length === 0 && segments.length >= 1) {
+      const lastSeg = segments[segments.length - 1];
+      unresolvedQuestions.push({
+        id: "q-dyn-1",
+        question: `Confirm final progress and alignment on: "${lastSeg.text.substring(0, 80)}"`,
+        suggestedFollowUp: "Review during next sync to ensure all discussion items are complete.",
+        citation: {
+          id: "cit-q-0",
+          speaker: lastSeg.speaker,
+          timestamp: lastSeg.timestamp,
+          rawText: lastSeg.text,
+          lineIndex: lastSeg.lineIndex ?? 0,
+        },
+      });
+    }
 
     // 4. Dynamic Executive Summary
     const speakerList = speakers.length > 0 ? speakers.join(", ") : "The team";
