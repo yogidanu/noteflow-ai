@@ -269,9 +269,85 @@ export function App() {
     isGenerating,
     bridgeStage,
     handleGenerateSummary,
-    activeRecordingMeetingId,
     handleStopAndSynthesize,
   ]);
+
+  // Extension Bridge & URL Autostart Listener
+  useEffect(() => {
+    const handleAutostartUrl = (targetUrl: string) => {
+      const match = detectedMeetings.find((m) => m.meetingUrl && m.meetingUrl.includes(targetUrl));
+      if (match) {
+        startLiveRecording(match.id);
+      } else {
+        const adhoc = quickJoinUrl(targetUrl);
+        if (adhoc) {
+          setTimeout(() => {
+            startLiveRecording(adhoc.id);
+          }, 100);
+        }
+      }
+    };
+
+    // 1. Check URL query parameters for ?autostart=true&url=...
+    try {
+      if (typeof window !== "undefined") {
+        const searchParams = new URLSearchParams(window.location.search);
+        if (searchParams.get("autostart") === "true") {
+          const meetUrl = searchParams.get("url");
+          if (meetUrl) {
+            setTimeout(() => {
+              handleAutostartUrl(decodeURIComponent(meetUrl));
+            }, 400);
+            const cleanUrl = window.location.pathname;
+            window.history.replaceState({}, document.title, cleanUrl);
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    // 2. BroadcastChannel cross-tab listener for real-time start/stop from Google Meet extension
+    let channel: BroadcastChannel | null = null;
+    try {
+      if (typeof window !== "undefined" && "BroadcastChannel" in window) {
+        channel = new BroadcastChannel("noteflow_meeting_bridge");
+        channel.onmessage = (event) => {
+          const data = event.data;
+          if (!data || typeof data !== "object") return;
+
+          if (data.type === "START_RECORDING" && data.url) {
+            handleAutostartUrl(data.url);
+          } else if (data.type === "STOP_RECORDING") {
+            handleStopAndSynthesize();
+          } else if (data.type === "TOGGLE_PAUSE") {
+            togglePauseRecording();
+          }
+        };
+      }
+    } catch {
+      // ignore
+    }
+
+    // 3. Window message listener for cross-window communication
+    const handleWindowMessage = (event: MessageEvent) => {
+      const data = event.data;
+      if (!data || typeof data !== "object") return;
+
+      if (data.type === "NOTEFLOW_EXTENSION_START_RECORDING" && data.url) {
+        handleAutostartUrl(data.url);
+      } else if (data.type === "NOTEFLOW_EXTENSION_STOP_RECORDING") {
+        handleStopAndSynthesize();
+      }
+    };
+
+    window.addEventListener("message", handleWindowMessage);
+
+    return () => {
+      if (channel) channel.close();
+      window.removeEventListener("message", handleWindowMessage);
+    };
+  }, [detectedMeetings, quickJoinUrl, startLiveRecording, handleStopAndSynthesize, togglePauseRecording]);
 
   // -------------------------------------------------------------
   // APPLICATION ROUTING STATE MACHINE

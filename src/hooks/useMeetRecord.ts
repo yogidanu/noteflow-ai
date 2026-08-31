@@ -732,6 +732,26 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
     updateMeetingStatus(id, "scheduled");
   }, [updateMeetingStatus]);
 
+  // 12. Synchronize recording state to Google Meet Extension bridge
+  useEffect(() => {
+    try {
+      if (typeof window !== "undefined" && "BroadcastChannel" in window) {
+        const channel = new BroadcastChannel("noteflow_meeting_bridge");
+        channel.postMessage({
+          type: "NOTEFLOW_STATE_UPDATE",
+          lifecycleState: recordingLifecycleState,
+          activeMeetingId: activeRecordingMeetingId,
+          durationSeconds: recordingSeconds,
+          isPaused,
+          audioPowerLevel,
+        });
+        channel.close();
+      }
+    } catch {
+      // ignore
+    }
+  }, [recordingLifecycleState, activeRecordingMeetingId, recordingSeconds, isPaused, audioPowerLevel]);
+
   // Active meeting entity if currently recording
   const activeRecordingMeeting = detectedMeetings.find((m) => m.id === activeRecordingMeetingId) || null;
 
