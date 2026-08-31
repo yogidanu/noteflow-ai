@@ -148,8 +148,10 @@ export class WebAudioRecorder {
           this.recognition.interimResults = true;
           this.recognition.lang = "en-US";
 
+          let latestInterim = "";
+
           this.recognition.onresult = (event: any) => {
-            let interimTranscript = "";
+            latestInterim = "";
             for (let i = event.resultIndex; i < event.results.length; ++i) {
               const transcriptChunk = event.results[i][0].transcript;
               if (event.results[i].isFinal) {
@@ -165,31 +167,57 @@ export class WebAudioRecorder {
                     text: cleanChunk,
                   });
 
-                  this.fullTranscriptText = this.recognizedSegments
-                    .map((s) => `${s.speaker} [${s.timestamp}]: ${s.text}`)
-                    .join("\n");
-
-                  if (this.onLiveTranscriptChange) {
-                    this.onLiveTranscriptChange(this.fullTranscriptText);
-                  }
+                  this.currentUtterance = "";
                 }
               } else {
-                interimTranscript += transcriptChunk;
+                latestInterim += transcriptChunk;
               }
+            }
+
+            this.currentUtterance = latestInterim.trim();
+            this.fullTranscriptText = this.recognizedSegments
+              .map((s) => `${s.speaker} [${s.timestamp}]: ${s.text}`)
+              .join("\n");
+
+            if (this.currentUtterance) {
+              const liveView = this.fullTranscriptText
+                ? `${this.fullTranscriptText}\n${activeSpeaker} (speaking...): ${this.currentUtterance}`
+                : `${activeSpeaker}: ${this.currentUtterance}`;
+              this.onLiveTranscriptChange?.(liveView);
+            } else {
+              this.onLiveTranscriptChange?.(this.fullTranscriptText);
             }
           };
 
           this.recognition.onerror = (err: any) => {
-            console.warn("[WebAudioRecorder] Speech recognition event:", err?.error || err);
+            if (err?.error !== "no-speech") {
+              console.warn("[WebAudioRecorder] Speech recognition warning:", err?.error || err);
+            }
           };
 
           this.recognition.onend = () => {
-            // Auto-restart recognition if still recording (SpeechRecognition stops on long pauses)
-            if (this.isRunning && !this.isPaused && this.recognition) {
+            // Commit pending interim if any before restarting
+            if (this.currentUtterance.length > 0) {
+              const mins = Math.floor(this.durationSeconds / 60);
+              const secs = this.durationSeconds % 60;
+              const timeLabel = `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+              this.recognizedSegments.push({
+                speaker: activeSpeaker,
+                timestamp: timeLabel,
+                text: this.currentUtterance,
+              });
+              this.currentUtterance = "";
+              this.fullTranscriptText = this.recognizedSegments
+                .map((s) => `${s.speaker} [${s.timestamp}]: ${s.text}`)
+                .join("\n");
+            }
+
+            // Auto-restart recognition seamlessly if still recording
+            if (this.isRunning && !this.isPaused) {
               try {
-                this.recognition.start();
+                this.recognition?.start();
               } catch {
-                // Ignore already started errors
+                // Ignore already running
               }
             }
           };
@@ -259,6 +287,22 @@ export class WebAudioRecorder {
    */
   public async stop(): Promise<AudioRecordingResult> {
     this.isRunning = false;
+
+    // Flush any remaining active interim utterance to ensure zero words are lost
+    if (this.currentUtterance.trim().length > 0) {
+      const mins = Math.floor(this.durationSeconds / 60);
+      const secs = this.durationSeconds % 60;
+      const timeLabel = `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+      this.recognizedSegments.push({
+        speaker: "You",
+        timestamp: timeLabel,
+        text: this.currentUtterance.trim(),
+      });
+      this.currentUtterance = "";
+      this.fullTranscriptText = this.recognizedSegments
+        .map((s) => `${s.speaker} [${s.timestamp}]: ${s.text}`)
+        .join("\n");
+    }
 
     if (this.recognition) {
       try {
