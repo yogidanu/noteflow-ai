@@ -8,6 +8,7 @@ import {
 } from "../types/meeting";
 import { SAMPLE_1ON1_REORG_TRANSCRIPT, SAMPLE_ZOOM_TRANSCRIPT } from "../lib/sampleData";
 import { apiClient } from "../lib/apiClient";
+import { resolveFinalTranscript } from "../lib/resolveFinalTranscript";
 import { webAudioRecorder } from "../lib/audioRecorder";
 import { desktopBridge } from "../lib/desktopBridge";
 import { MeetingDetectionStateType } from "../components/modals/MeetingDetectionSetupModal";
@@ -648,36 +649,56 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
         updateMeetingStatus(id, "transcribing");
         setRecordingLifecycleState("PROCESSING");
 
+        // Demo mode keeps its sample-transcript behavior; live mode
+        // resolves the final transcript Deepgram-first (see below).
         let resolvedTranscript = isDemoMode
           ? (target.sampleTranscriptPreset || SAMPLE_ZOOM_TRANSCRIPT)
-          : (liveSpeechTranscript || "");
+          : "";
 
-        // Stop session and trigger synthesis on backend if active
-        if (target.dedupHash && !isDemoMode) {
-          try {
-            const stopRes = await apiClient.stopRecording(target.dedupHash);
-            if (stopRes && stopRes.transcript) {
-              resolvedTranscript = stopRes.transcript;
-            }
-          } catch (e) {
-            console.warn("[useMeetRecord] Backend stop recording fallback:", e);
-          }
-        }
+        if (!isDemoMode) {
+          let sessionTranscript = "";
+          let deepgramTranscript = "";
 
-        // If audio blob is captured in live mode and we still need transcription, transcribe via backend STT service
-        if (audioBlob && !isDemoMode && !resolvedTranscript) {
-          try {
-            const sttResult = await apiClient.transcribeAudio({
-              audioBlob,
-              meetingId: id,
-              knownAttendees: target.attendees,
-            });
-            if (sttResult && (sttResult.rawVtt || sttResult.sanitizedText)) {
-              resolvedTranscript = sttResult.rawVtt || sttResult.sanitizedText;
+          // Stop session and trigger synthesis on backend if active.
+          // A session transcript, when the backend returns one, is the
+          // highest-precedence source.
+          if (target.dedupHash) {
+            try {
+              const stopRes = await apiClient.stopRecording(target.dedupHash);
+              if (stopRes && stopRes.transcript) {
+                sessionTranscript = stopRes.transcript;
+              }
+            } catch (e) {
+              console.warn("[useMeetRecord] Backend stop recording fallback:", e);
             }
-          } catch (e) {
-            console.warn("[useMeetRecord] Live transcription fallback:", e);
           }
+
+          // Deepgram-first: whenever the session produced no transcript
+          // and an audio blob exists, transcribe via the backend STT
+          // service (Deepgram Nova-3) — EVEN IF the browser Web Speech
+          // transcript is non-empty. Web Speech previously won by
+          // default and fed synthesis homophone-riddled text; it is now
+          // only the fallback when Deepgram yields nothing usable.
+          if (audioBlob && !sessionTranscript) {
+            try {
+              const sttResult = await apiClient.transcribeAudio({
+                audioBlob,
+                meetingId: id,
+                knownAttendees: target.attendees,
+              });
+              if (sttResult && (sttResult.rawVtt || sttResult.sanitizedText)) {
+                deepgramTranscript = sttResult.rawVtt || sttResult.sanitizedText;
+              }
+            } catch (e) {
+              console.warn("[useMeetRecord] Live transcription fallback:", e);
+            }
+          }
+
+          resolvedTranscript = resolveFinalTranscript({
+            sessionTranscript,
+            deepgramTranscript,
+            webSpeechTranscript: liveSpeechTranscript,
+          });
         }
 
         // Safe Fallback: Ensure non-empty meeting dialogue so AI synthesis always succeeds
