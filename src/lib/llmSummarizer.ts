@@ -473,7 +473,19 @@ export class GenerativeSummarizer {
       const sourceLine = sources[idx] || sources[0];
       const rawClean = this.cleanDialogue(line);
       const taskTitle = this.toProfessionalActionTask(rawClean);
-      const assignee = sourceLine?.speaker || this.inferAssignee(line, speakers) || "Assigned Owner";
+      // Owner priority: a person NAMED as the commitment's subject or
+      // direct addressee ("Arjun will schedule…", "Carlos, can you…")
+      // owns the task — not whoever happened to say the sentence. The
+      // old rule always used the speaker, so every delegated task in
+      // the 2026-10-23 evaluation was assigned to the wrong person.
+      // Pronoun commitments ("I will…", "We will…") and the appositive
+      // "I, Yogendra, will…" name no separate owner, so they keep the
+      // speaker.
+      const assignee =
+        this.resolveNamedAssignee(line, speakers) ||
+        sourceLine?.speaker ||
+        this.inferAssignee(line, speakers) ||
+        "Assigned Owner";
       // Due date is optional and is only ever a date that was actually
       // spoken. Fabricated defaults ("Next Checkpoint", "End of Week")
       // put deadlines in people's calendars that nobody agreed to.
@@ -502,37 +514,61 @@ export class GenerativeSummarizer {
     sources: SanitizedResult["lines"],
     lines: string[]
   ): UnresolvedQuestion[] {
-    const questions: UnresolvedQuestion[] = [];
+    // Selection is priority-based, not first-come-first-served. The old
+    // rule (push in source order, cap at 3) let ordinary questions asked
+    // early in question-rich transcripts (interviewer prompts in a user
+    // interview, idea-questions in a brainstorm) fill every slot, so the
+    // questions the meeting EXPLICITLY parked — "leaving open…",
+    // "parking lot…", "not sure… depends on…" — were silently dropped
+    // (evaluation 2026-10-23, scenarios S2 and S5). Now: collect every
+    // candidate, take all explicitly-parked (Tier 1) candidates first,
+    // fill the remaining slots with ordinary questions (Tier 2), cap the
+    // total at 5, and DISPLAY the selection in original source order.
+    const PARKED_MARKERS =
+      /\b(leaving open|left open|open question|parking lot|not sure|depends on|need to figure out|unresolved)\b/i;
 
+    const candidates: Array<{ idx: number; parked: boolean }> = [];
     lines.forEach((line, idx) => {
       const lower = line.toLowerCase();
       const isQuestion =
         this.classifyLine(line) === "question" ||
         /\b(not sure|depends on|open question|parking lot)\b/.test(lower);
-
-      if (isQuestion && questions.length < 4) {
-        const sourceLine = sources[idx] || sources[0];
-        const cleanQ = this.toProfessionalQuestion(this.cleanDialogue(line));
-
-        questions.push({
-          id: `q-${Math.random().toString(36).substr(2, 9)}`,
-          question: cleanQ,
-          // No suggestedFollowUp: it used to be a hardcoded template
-          // ("Review during upcoming sync to finalize requirements and
-          // dependency.") rendered under every generated question —
-          // content nobody in the meeting ever said. The field stays
-          // optional in the type for user-edited questions; generated
-          // questions leave it absent, and the UI renders nothing for
-          // an absent follow-up.
-          citation: this.buildCitation(`cit-q-${idx}`, sourceLine, line, idx),
-        });
+      if (isQuestion) {
+        candidates.push({ idx, parked: PARKED_MARKERS.test(line) });
       }
+    });
+
+    const MAX_QUESTIONS = 5;
+    const selected = [
+      ...candidates.filter((c) => c.parked),
+      ...candidates.filter((c) => !c.parked),
+    ]
+      .slice(0, MAX_QUESTIONS)
+      .sort((a, b) => a.idx - b.idx);
+
+    const questions: UnresolvedQuestion[] = selected.map(({ idx }) => {
+      const line = lines[idx];
+      const sourceLine = sources[idx] || sources[0];
+      const cleanQ = this.toProfessionalQuestion(this.cleanDialogue(line));
+
+      return {
+        id: `q-${Math.random().toString(36).substr(2, 9)}`,
+        question: cleanQ,
+        // No suggestedFollowUp: it used to be a hardcoded template
+        // ("Review during upcoming sync to finalize requirements and
+        // dependency.") rendered under every generated question —
+        // content nobody in the meeting ever said. The field stays
+        // optional in the type for user-edited questions; generated
+        // questions leave it absent, and the UI renders nothing for
+        // an absent follow-up.
+        citation: this.buildCitation(`cit-q-${idx}`, sourceLine, line, idx),
+      };
     });
 
     // No question was asked or left open means the parking lot stays
     // empty. Converting the last line into a "confirm the requirements"
     // question invents an unresolved item nobody raised.
-    return questions.slice(0, 3);
+    return questions;
   }
 
   /**
@@ -966,12 +1002,109 @@ export class GenerativeSummarizer {
     return undefined;
   }
 
+  /** Openers that look like a name to the patterns below but are not people. */
+  private static readonly NON_PERSON_OPENERS = new Set([
+    "the",
+    "this",
+    "that",
+    "it",
+    "our",
+    "my",
+    "team",
+    "there",
+  ]);
+
+  /**
+   * Resolves a captured name to the meeting roster: an exact full-name
+   * match wins; a first name that uniquely matches one speaker resolves
+   * to that speaker's full roster name ("Arjun" → "Arjun Mehta"); a
+   * name matching nobody is used as written. Returns undefined when the
+   * capture is an obvious non-person opener, so the caller falls back
+   * to the speaker.
+   */
+  private static resolveRosterName(
+    captured: string,
+    speakers: string[]
+  ): string | undefined {
+    const name = captured.trim().replace(/\s+/g, " ");
+    if (!name) return undefined;
+    if (this.NON_PERSON_OPENERS.has(name.split(" ")[0].toLowerCase())) {
+      return undefined;
+    }
+    const lower = name.toLowerCase();
+    const exact = speakers.find((s) => s.toLowerCase() === lower);
+    if (exact) return exact;
+    const firstName = lower.split(" ")[0];
+    const firstNameMatches = speakers.filter(
+      (s) => s.toLowerCase().split(/\s+/)[0] === firstName
+    );
+    if (firstNameMatches.length === 1) return firstNameMatches[0];
+    return name;
+  }
+
+  /**
+   * The named owner of a commitment, when the sentence names one:
+   *  - a leading named subject: "Arjun will schedule…",
+   *    "Priya Sharma will send…"
+   *  - a leading direct address: "Carlos, can you send…",
+   *    "Meera, please review…"
+   * Returns undefined for pronoun commitments ("I will…", "We will…"),
+   * appositives ("I, Yogendra, will…" — the speaker owns it), and
+   * non-person subjects, leaving those to the speaker fallback.
+   */
+  private static resolveNamedAssignee(
+    text: string,
+    speakers: string[]
+  ): string | undefined {
+    const t = text.trim();
+    const nameWill = t.match(
+      /^([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\s+will\b/
+    );
+    if (nameWill) {
+      const resolved = this.resolveRosterName(nameWill[1], speakers);
+      if (resolved) return resolved;
+    }
+    const directAddress = t.match(
+      /^([A-Z][a-z]+(?:\s[A-Z][a-z]+)?),\s*(?:can you|could you|will you|would you|please)\b/i
+    );
+    if (directAddress) {
+      const resolved = this.resolveRosterName(directAddress[1], speakers);
+      if (resolved) return resolved;
+    }
+    return undefined;
+  }
+
   private static extractDueDate(text: string): string | undefined {
     const lower = text.toLowerCase();
+    // Precedence is deliberate (first match wins): a specific spoken
+    // date outranks a relative one, and "today" outranks a clock time
+    // so "by 6 pm today" stays "Today" (existing behaviour).
     if (lower.includes("tomorrow")) return "Tomorrow";
+    // Explicit month date: "by March 14" → "March 14".
+    const monthDate = text.match(
+      /\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})\b/i
+    );
+    if (monthDate) {
+      const month =
+        monthDate[1].charAt(0).toUpperCase() +
+        monthDate[1].slice(1).toLowerCase();
+      return `${month} ${monthDate[2]}`;
+    }
+    // Any weekday: "by Wednesday" → "Wednesday". (Only Friday/Monday
+    // were recognised before, so mid-week deadlines were silently
+    // dropped — evaluation 2026-10-23, scenarios S1 and S3.)
+    const weekday = lower.match(
+      /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/
+    );
+    if (weekday) {
+      return weekday[1].charAt(0).toUpperCase() + weekday[1].slice(1);
+    }
     if (lower.includes("today")) return "Today";
-    if (lower.includes("friday")) return "Friday";
-    if (lower.includes("monday")) return "Monday";
+    // Clock time: "by 6 pm" / "at 10:30 am" → "6 PM" / "10:30 AM".
+    const clock = text.match(/\b(?:by|at)\s+(\d{1,2}(?::\d{2})?)\s*(am|pm)\b/i);
+    if (clock) {
+      return `${clock[1]} ${clock[2].toUpperCase()}`;
+    }
     if (lower.includes("next week")) return "Next Week";
     if (lower.includes("this week")) return "This Week";
     if (lower.includes("end of week") || lower.includes("eod")) return "End of Week";
