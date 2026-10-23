@@ -72,6 +72,14 @@ function hasActionCommitment(text: string): boolean {
   const t = text.trim();
   if (/\b(i|we|you|he|she|they)\s+will\b/i.test(t)) return true;
   if (/\b(i'll|we'll|you'll|i\s+shall)\b/i.test(t)) return true;
+  // Obligation statements anchored to an action verb: "We need to fix …"
+  // (the verb anchor keeps "we need to figure out whether …" — a
+  // question — from spawning tasks).
+  if (
+    /\b(i|we)\s+(need|have)\s+to\s+(send|share|prepare|create|update|review|schedule|assign|fix|test|draft|write|build|ship|resolve|finish|complete|decide|check|set up|follow up)\b/i.test(t)
+  ) {
+    return true;
+  }
   if (/^[A-Z][a-z]+(?:\s[A-Z][a-z]+)?\s+will\b/.test(t)) return true;
   if (/^(?:[A-Z][A-Za-z\s]{0,30},\s*)?(can you|could you|will you|please)\b/i.test(t)) return true;
   if (
@@ -129,6 +137,155 @@ function computeGroundingConfidence(
   if (share >= 0.9) return "high";
   if (share >= 0.5) return "moderate";
   return "low";
+}
+
+/**
+ * Constrained action normalization — DISPLAY form only (mirrors
+ * toProfessionalActionTask in src/lib/llmSummarizer.ts; the citation
+ * keeps the verbatim segment). A spoken commitment becomes an
+ * imperative task statement by REMOVING framing and converting the
+ * lead verb — never by paraphrase. Facts (objects, scope qualifiers,
+ * recipients, time expressions) are preserved exactly.
+ *
+ * Supported patterns (anything else falls back to the original text):
+ *  1. Subject + will/shall: "I will …", "Priya will …", including a
+ *     subject appositive: "I, Yogendra, will assign …". The verb after
+ *     will/shall is already base form, so dropping subject + auxiliary
+ *     yields the imperative — no verb morphology is attempted.
+ *  2. Contractions: "I'll …", "We'll …", "You'll …".
+ *  3. Obligation: "We need to fix …", "I have to send …".
+ *  4. Requests: "Carlos, can you update …?", "Please send …".
+ *  5. Continuations: a repeated PRONOUN subject + will inside the
+ *     sentence keeps its verb ("…, and I will review those fixes" →
+ *     "…, and review those fixes"; ". I will send …" → ". Send …").
+ *     Named third-person continuations are NOT rewritten — dropping a
+ *     different person's name would misattribute work.
+ *  6. A leading bare acknowledgment ("Will do. I will have …") is
+ *     dropped when a real commitment sentence follows it.
+ *
+ * Unrecognized constructions return the original sentence (capitalized)
+ * — a verbatim task is always preferable to a guessed rewrite.
+ * Normalized output ends with exactly one period.
+ */
+function normalizeActionTaskText(text: string): string {
+  const original = text.trim().replace(/\s+/g, " ");
+  if (!original) return text;
+
+  let rest = original;
+  let changed = false;
+  const apply = (re: RegExp, replacement: string) => {
+    const next = rest.replace(re, replacement);
+    if (next !== rest) {
+      rest = next;
+      changed = true;
+    }
+  };
+
+  // (6) Leading acknowledgment sentence: "Will do. I will have …".
+  apply(/^(?:will do|sure thing|sure|okay|ok|got it|absolutely)[.!]\s+(?=\S)/i, "");
+
+  // (1)–(4) Leading commitment framing — first match wins.
+  const leadPatterns: RegExp[] = [
+    /^(?:[A-Z][a-z]+(?:\s[A-Z][a-z]+)?|I|we|you|he|she|they)(?:,\s*[^,]{1,40},)?\s+(?:will|shall)\s+/,
+    /^(?:I'll|we'll|you'll|he'll|she'll|they'll)\s+/i,
+    /^(?:I|we)\s+(?:need|have)\s+to\s+/i,
+    /^(?:[A-Z][a-z]+(?:\s[A-Z][a-z]+)?,\s*)?(?:can you|could you|will you|would you|please)\s+/i,
+    /^please\s+/i,
+    /^need to\s+/i,
+  ];
+  for (const pattern of leadPatterns) {
+    if (pattern.test(rest)) {
+      rest = rest.replace(pattern, "");
+      changed = true;
+      break;
+    }
+  }
+
+  // (5) Continuations: pronoun subject + will keeps its verb.
+  const andContinuation = /,?\s+and\s+(?:I|we|you|he|she|they)\s+(?:will|shall)\s+/gi;
+  const andContracted = /,?\s+and\s+(?:I'll|we'll|you'll|he'll|she'll|they'll)\s+/gi;
+  for (const re of [andContinuation, andContracted]) {
+    const next = rest.replace(re, (m) => (m.startsWith(",") ? ", and " : " and "));
+    if (next !== rest) {
+      rest = next;
+      changed = true;
+    }
+  }
+  apply(/,\s+(?:I|we|you|he|she|they)\s+(?:will|shall)\s+/g, ", ");
+  const afterSentences = rest.replace(
+    /\.\s+(?:I|we|you|he|she|they)\s+(?:will|shall)\s+([a-z])/g,
+    (_m, ch: string) => `. ${ch.toUpperCase()}`
+  );
+  if (afterSentences !== rest) {
+    rest = afterSentences;
+    changed = true;
+  }
+
+  if (!changed) {
+    return original.charAt(0).toUpperCase() + original.slice(1);
+  }
+  const trimmed = rest.trim();
+  if (!trimmed) return original.charAt(0).toUpperCase() + original.slice(1);
+  const capitalized = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+  return `${capitalized.replace(/[.?!\s]+$/, "")}.`;
+}
+
+/**
+ * Constrained question normalization — DISPLAY form only (mirrors
+ * toProfessionalQuestion in src/lib/llmSummarizer.ts; the citation
+ * keeps the verbatim segment). Supported patterns:
+ *  1. Direct questions (already ending in "?") are kept, cleaned: a
+ *     leading label ("One open question: Should we …?") is dropped and
+ *     the ending collapses to exactly one "?".
+ *  2. "…whether <subject> <aux> <rest>": framing before "whether" is
+ *     dropped and the clause is inverted — "whether team workspaces
+ *     should be included in the free beta, or kept only for the Pro
+ *     tier" → "Should team workspaces be included in the free beta, or
+ *     kept only for the Pro tier?".
+ *  3. "<We/I> … figure out whether to <A> or <B>" →
+ *     "Should we <A> or <B>?".
+ *  4. Anything else falls back to the original text.
+ *
+ * Punctuation guard on EVERY path: a question never ends in ".?" —
+ * text already ending in "." (or "!") keeps its punctuation, text
+ * ending in "?" keeps exactly one, and only punctuation-less STT text
+ * gains a "?".
+ */
+function normalizeQuestionText(text: string): string {
+  const original = text.trim().replace(/\s+/g, " ");
+  if (!original) return text;
+  const cap = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
+  const rest = original.replace(
+    /^(?:one open question|open question|one question|a question|question)\s*[:—–-]\s*/i,
+    ""
+  );
+
+  // (1) Direct question — keep, with exactly one terminal "?".
+  if (rest.endsWith("?")) {
+    return `${cap(rest.replace(/[.?]+$/, ""))}?`;
+  }
+
+  // (3) "<We/I> … figure out whether to <A> or <B>".
+  const figureOut = rest.match(
+    /\b(we|i)\b[^.]*?\bfigure out\s+whether\s+to\s+(.+?)\s+or\s+(.+?)\.?$/i
+  );
+  if (figureOut) {
+    const subject = figureOut[1].toLowerCase() === "i" ? "I" : "we";
+    return `Should ${subject} ${figureOut[2]} or ${figureOut[3]}?`;
+  }
+
+  // (2) "whether <subject> <aux> <rest>" inversion.
+  const whether = rest.match(
+    /^[^.]*?\bwhether\s+(.+?)\s+(should|shall|can|could|will|would|is|are|was|were|do|does|did)\s+(.+?)\.?$/i
+  );
+  if (whether) {
+    return `${cap(whether[2].toLowerCase())} ${whether[1]} ${whether[3]}?`;
+  }
+
+  // (4) Fallback — original text, punctuation guard applied.
+  if (/[.!]$/.test(rest)) return cap(rest);
+  return `${cap(rest)}?`;
 }
 
 export class SummaryService {
@@ -277,28 +434,22 @@ export class SummaryService {
       const hasAction = kind === "other" && hasActionCommitment(seg.text);
 
       if (hasAction && actionItems.length < 8) {
-        // Extract possible assignee from segment speaker or direct mention
+        // Assignee: a named subject ("Priya will …") or a direct
+        // addressee ("Carlos, can you …") owns the task; otherwise the
+        // segment speaker does.
         let assignee = seg.speaker;
-        let taskText = seg.text;
-
-        const nameWillMatch = seg.text.match(/^([A-Z][a-z]+)\s+will\s+(.*)/i);
-        const directMention = seg.text.match(/^([A-Z][a-z]+(?: [A-Z][a-z]+)?),\s*(?:can you|please|will you)/);
-
+        const nameWillMatch = seg.text.match(/^([A-Z][a-z]+(?: [A-Z][a-z]+)?)\s+will\s+/i);
+        const directMention = seg.text.match(/^([A-Z][a-z]+(?: [A-Z][a-z]+)?),\s*(?:can you|could you|please|will you)/i);
         if (nameWillMatch) {
           assignee = nameWillMatch[1];
-          taskText = nameWillMatch[2];
         } else if (directMention) {
           assignee = directMention[1];
-          taskText = seg.text.replace(/^([A-Za-z\s]+),\s*(can you|please|will you)\s*/i, "");
-        } else {
-          taskText = seg.text
-            .replace(/^([A-Za-z\s]+),\s*(can you|please|will you)\s*/i, "")
-            .replace(/^(will do\.?|i will|i'll)\s*/i, "")
-            .trim();
         }
 
-        taskText = taskText.trim();
-        taskText = taskText.charAt(0).toUpperCase() + taskText.slice(1);
+        // Display text: constrained normalization to imperative form
+        // (see normalizeActionTaskText) — facts preserved, framing
+        // removed. The citation below keeps the verbatim segment.
+        const taskText = normalizeActionTaskText(seg.text);
 
         // Extract due date if present
         let dueDate: string | undefined;
@@ -338,8 +489,16 @@ export class SummaryService {
       if (isQuestionOrPending && unresolvedQuestions.length < 5) {
         unresolvedQuestions.push({
           id: `q-dyn-${idx + 1}`,
-          question: seg.text.trim(),
-          suggestedFollowUp: `Follow up with ${seg.speaker || "team"} to clarify open dependency.`,
+          // Display text: constrained normalization to question form
+          // (see normalizeQuestionText); the citation keeps the
+          // verbatim segment.
+          question: normalizeQuestionText(seg.text),
+          // No suggestedFollowUp: it used to be a template sentence
+          // generated by the system ("Follow up with … to clarify open
+          // dependency.") — content nobody in the meeting ever said.
+          // The field stays optional in the type for user-edited
+          // follow-ups; generated questions leave it absent, and the
+          // UI renders nothing for an absent follow-up.
           citation: {
             id: `cit-q-${idx}`,
             speaker: seg.speaker,
