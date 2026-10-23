@@ -90,6 +90,96 @@ export class GenerativeSummarizer {
   }
 
   /**
+   * Derives a meeting-level title from the same classified themes used
+   * for discussion topics. Context outranks a decision; when neither is
+   * present, the first thematic discussion topic wins. Returns undefined
+   * when the transcript has no classifiable theme, leaving the caller to
+   * use its speaker/date fallbacks.
+   *
+   * A theme title is an abstraction, never a quotation: candidates are
+   * rejected when they reproduce a source line (or appear contiguously
+   * within one), begin like a sentence fragment, or exceed 80 characters.
+   */
+  public static deriveMeetingThemeTitle(
+    sanitized: SanitizedResult
+  ): string | undefined {
+    const kept = sanitized.lines
+      .map((source) => ({ source, text: source.text.trim() }))
+      .filter(
+        (entry) =>
+          entry.text.length > 5 &&
+          !entry.text.toLowerCase().startsWith("recording session")
+      );
+    const sources = kept.map((entry) => entry.source);
+    const rawLines = kept.map((entry) => entry.text);
+    const cleanLines = rawLines.map((line) => this.cleanDialogue(line));
+
+    let contextTitle: string | undefined;
+    let decisionTitle: string | undefined;
+    let firstThemeTitle: string | undefined;
+
+    cleanLines.forEach((clean, idx) => {
+      if (clean.length <= 3) return;
+      const kind = this.topicKind(clean);
+      const generated = this.buildDiscussionTopic(
+        sources,
+        idx,
+        rawLines[idx],
+        clean,
+        kind
+      ).topic;
+      const candidate =
+        this.validMeetingTitle(generated, cleanLines) ||
+        (kind !== "other"
+          ? this.validMeetingTitle(this.categoryTitle(kind), cleanLines)
+          : undefined);
+
+      if (!candidate) return;
+      if (kind === "context" && !contextTitle) {
+        contextTitle = candidate;
+      } else if (kind === "decision" && !decisionTitle) {
+        decisionTitle = candidate;
+      } else if (
+        !firstThemeTitle &&
+        (kind !== "other" || generated !== this.categoryTitle(kind))
+      ) {
+        firstThemeTitle = candidate;
+      }
+    });
+
+    return contextTitle || decisionTitle || firstThemeTitle;
+  }
+
+  private static validMeetingTitle(
+    topic: string,
+    cleanLines: string[]
+  ): string | undefined {
+    const title = topic
+      .replace(/\bnote\s+flow\s+ai\b/gi, "NoteFlow AI")
+      .replace(/\bnoteflow\s+ai\b/gi, "NoteFlow AI")
+      .replace(/\bnote\s+flow\b/gi, "NoteFlow")
+      .replace(/\bnoteflow\b/gi, "NoteFlow")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (!title || title.length > 80) return undefined;
+    if (
+      /^(before|after|when|while|because|since|and|but|or|so|if|then|the reason is|this is|we have|we|i)\b/i.test(
+        title
+      )
+    ) {
+      return undefined;
+    }
+
+    const titleLower = title.toLowerCase();
+    const reproducesSource = cleanLines.some((clean) => {
+      const cleanLower = clean.toLowerCase();
+      return titleLower === cleanLower || cleanLower.includes(titleLower);
+    });
+    return reproducesSource ? undefined : title;
+  }
+
+  /**
    * Whether one citation actually resolves to its source.
    *
    * Time-anchored citations (recorder / VTT / STT input) resolve by a real

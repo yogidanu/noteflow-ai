@@ -79,12 +79,14 @@ function generateSmartTitle(text: string, sanitized: SanitizedResult): string {
     }
   }
 
-  // Topic detection from clean spoken lines
-  for (const line of sanitized.lines.slice(0, 5)) {
-    const l = line.text.replace(/^(<v[^>]*>|[-*•]|\[[\d:]+\]|(?:Speaker\s+\d+|[A-Z][a-zA-Z0-9_\s]+):)/g, "").trim();
-    if (l.length > 15 && l.length < 60 && !l.includes("?")) {
-      return l.charAt(0).toUpperCase() + l.slice(1);
-    }
+  // Theme-derived title: reuse the summarizer's line classification and
+  // discussion-topic machinery. Context themes outrank decision themes;
+  // otherwise the first thematic topic is used. This replaces a scan that
+  // returned the first 16–59 character line, which promoted arbitrary
+  // sentence fragments (e.g. "Before we build teamworkspace") to titles.
+  const themeTitle = GenerativeSummarizer.deriveMeetingThemeTitle(sanitized);
+  if (themeTitle) {
+    return themeTitle;
   }
 
   // Speaker based title
