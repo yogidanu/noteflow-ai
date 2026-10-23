@@ -307,6 +307,84 @@ function normalizeQuestionText(text: string): string {
   return `${cap(rest)}?`;
 }
 
+/**
+ * Historical-decision guard (mirrors the client summarizer, Fix 5a):
+ * a decision framed in the past ("Last year we decided…") is history,
+ * not a decision of this meeting. Present-perfect framing ("we have
+ * decided…") is a live decision and is never historical.
+ */
+const PAST_TIME_MARKERS =
+  /\b(last year|last quarter|last month|last week|previously|back then|years ago)\b/i;
+
+function isHistoricalDecision(text: string): boolean {
+  const lower = text.toLowerCase();
+  if (!PAST_TIME_MARKERS.test(lower)) return false;
+  if (/\b(have|has)\s+(decided|agreed)\b/.test(lower)) return false;
+  return /\b(decided|agreed)\b/.test(lower);
+}
+
+/** Words that mark a decision as overturning an earlier one (Fix 4). */
+const REVERSER_MARKERS =
+  /\b(postpone|postponed|delay|delayed|defer|deferred|cancel|cancelled|cancels|drop|dropped|remove|removed|scrap|abandon|revert|roll\s?back|pause|paused|hold off|no longer|instead)\b/i;
+
+/** Function/decision-framing words excluded from topic overlap (Fix 4). */
+const DECISION_STOPWORDS = new Set([
+  "we", "have", "has", "had", "decided", "agreed", "decision", "agreement",
+  "to", "the", "a", "an", "on", "for", "all", "and", "or", "is", "it",
+  "this", "that", "until", "before", "with", "from", "our", "your",
+  "their", "will", "would", "should", "first", "be", "been", "by", "at",
+  "in", "of", "into", "are", "was", "were", "because", "as", "so",
+]);
+
+function decisionContentWords(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .replace(/[^a-z0-9.\s]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length >= 2 && !DECISION_STOPWORDS.has(w))
+  );
+}
+
+/**
+ * Final-state Decision Log (mirrors the client summarizer, Fix 4):
+ * removes, in place, every decision that a LATER decision with a
+ * reversal marker supersedes — same topic only, judged by a
+ * significant content-word overlap of at least 2 between the two
+ * decisions' source segments.
+ */
+function removeSupersededDecisions(decisions: DecisionItem[]): void {
+  const removed = new Set<number>();
+  const wordSets = decisions.map((d) =>
+    decisionContentWords(d.citation?.rawText || d.text)
+  );
+  decisions.forEach((entry, j) => {
+    const sourceText = entry.citation?.rawText || entry.text;
+    if (!REVERSER_MARKERS.test(sourceText)) return;
+    for (let i = 0; i < j; i++) {
+      if (removed.has(i)) continue;
+      let overlap = 0;
+      wordSets[i].forEach((w) => {
+        if (wordSets[j].has(w)) overlap++;
+      });
+      if (overlap >= 2) removed.add(i);
+    }
+  });
+  for (let i = decisions.length - 1; i >= 0; i--) {
+    if (removed.has(i)) decisions.splice(i, 1);
+  }
+}
+
+/** Habitual "will" — a routine, not a commitment (Fix 5b). */
+const HABITUAL_WILL =
+  /\bwill\s+(usually|typically|generally|often|always|normally)\b/i;
+
+/** Vague closing revisit with no deliverable (Fix 5d). */
+const VAGUE_REVISIT =
+  /\b(come back to (these|this|those|it)|circle back|revisit (this|these|it|them) later|discuss (this|it) later)\b/i;
+const DELIVERABLE_VERB =
+  /\b(send|share|prepare|create|update|review|schedule|assign|fix|test|draft|write|build|ship|resolve|finish|complete)\b/i;
+
 /** Openers that look like a name to the assignee patterns but are not people. */
 const NON_PERSON_OPENERS = new Set([
   "the",
@@ -446,8 +524,11 @@ export class SummaryService {
       const hasDecision = decisionKeywords.some((kw) =>
         kw.includes(" ") ? lower.includes(kw) : new RegExp(`\\b${kw}\\b`).test(lower)
       );
+      // Fix 5a: a decision framed in the past is history, not a
+      // decision of this meeting.
+      const isLiveDecision = hasDecision && !isHistoricalDecision(seg.text);
 
-      if (hasDecision && decisions.length < 6) {
+      if (isLiveDecision && decisions.length < 6) {
         let cleanText = seg.text
           .replace(/^(decision reached:?|decision:?|we decided to?|we agreed to?)\s*/i, "")
           .trim();
@@ -477,6 +558,10 @@ export class SummaryService {
       }
     });
 
+    // Fix 4: drop decisions a later decision reversed, so the log
+    // reflects the meeting's final state.
+    removeSupersededDecisions(decisions);
+
     // Deliberately NO fallback decision: a transcript with no explicit
     // decision gets an empty decision log. Promoting the longest segment
     // into a "working consensus" invented decisions nobody made.
@@ -490,7 +575,14 @@ export class SummaryService {
         kw.includes(" ") ? lower.includes(kw) : new RegExp(`\\b${kw}\\b`).test(lower)
       );
       const kind = hasDecision ? "decision" : classifySegment(seg.text);
-      const hasAction = kind === "other" && hasActionCommitment(seg.text);
+      // Fix 5b/5d: habitual "will" is a routine, and a vague closing
+      // revisit with no deliverable verb is not a task (mirrors the
+      // client summarizer's buildActionItems guards).
+      const hasAction =
+        kind === "other" &&
+        hasActionCommitment(seg.text) &&
+        !HABITUAL_WILL.test(seg.text) &&
+        !(VAGUE_REVISIT.test(seg.text) && !DELIVERABLE_VERB.test(seg.text));
 
       if (hasAction && actionItems.length < 8) {
         // Assignee: a named subject ("Priya will …") or a direct
@@ -561,9 +653,34 @@ export class SummaryService {
         questionCandidates.push({ idx, parked: PARKED_MARKERS.test(seg.text) });
       }
     });
+    // Fix 5c: answered questions are not unresolved (mirrors the
+    // client summarizer): suppress an ordinary (Tier 2) candidate when
+    // the immediately following segment is a substantive (> 15 chars)
+    // statement by a different speaker. Tier 1 (parked) candidates are
+    // never suppressed; a following Tier 1 segment does not block
+    // suppression, a following ordinary question does.
+    const questionCandidateIdx = new Set(questionCandidates.map((c) => c.idx));
+    const liveQuestionCandidates = questionCandidates.filter(({ idx, parked }) => {
+      if (parked) return true;
+      const next = segments[idx + 1];
+      if (!next) return true;
+      const thisSpeaker = segments[idx]?.speaker;
+      if (!thisSpeaker || !next.speaker || next.speaker === thisSpeaker) {
+        return true;
+      }
+      if (next.text.trim().length <= 15) return true;
+      if (
+        questionCandidateIdx.has(idx + 1) &&
+        !PARKED_MARKERS.test(next.text) &&
+        classifySegment(next.text) === "question"
+      ) {
+        return true;
+      }
+      return false;
+    });
     const selectedQuestionIdx = [
-      ...questionCandidates.filter((c) => c.parked),
-      ...questionCandidates.filter((c) => !c.parked),
+      ...liveQuestionCandidates.filter((c) => c.parked),
+      ...liveQuestionCandidates.filter((c) => !c.parked),
     ]
       .slice(0, 5)
       .sort((a, b) => a.idx - b.idx)
