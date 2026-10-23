@@ -51,6 +51,61 @@ export interface AIAnalysisResult {
   isPartialCapture?: boolean;
 }
 
+/**
+ * Commitment-based action detection (mirrors the client summarizer in
+ * src/lib/llmSummarizer.ts): an action item requires a will/imperative
+ * commitment, never a keyword substring — "check" inside "check-in" and
+ * "share" inside "shared workspace" created phantom tasks with invented
+ * due dates in the 2026-10-23 live run.
+ */
+function hasActionCommitment(text: string): boolean {
+  const t = text.trim();
+  if (/\b(i|we|you|he|she|they)\s+will\b/i.test(t)) return true;
+  if (/\b(i'll|we'll|you'll|i\s+shall)\b/i.test(t)) return true;
+  if (/^[A-Z][a-z]+(?:\s[A-Z][a-z]+)?\s+will\b/.test(t)) return true;
+  if (/^(?:[A-Z][A-Za-z\s]{0,30},\s*)?(can you|could you|will you|please)\b/i.test(t)) return true;
+  if (
+    /^(please\s+)?(send|share|prepare|create|update|review|schedule|assign|fix|test|draft|write|set up|follow up|check)\b/i.test(t) &&
+    !t.includes("?")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function classifySegment(text: string): "decision" | "question" | "rationale" | "context" | "other" {
+  const lower = text.toLowerCase().trim();
+  if (
+    text.includes("?") ||
+    /\b(open question|question we|leaving open|left open|parking lot)\b/.test(lower) ||
+    /^(how|what|why|when|where|who|should|can we|could we)\b/.test(lower) ||
+    /\bwhether\b/.test(lower)
+  ) {
+    return "question";
+  }
+  if (/^(the reason|reason:|because|since)\b/.test(lower) || /\breason is\b/.test(lower)) {
+    return "rationale";
+  }
+  if (/^(this is a|this is the|welcome|today we|in this meeting|planning check[-\s]?in)\b/.test(lower)) {
+    return "context";
+  }
+  return "other";
+}
+
+/** Grounding measured from citations, never asserted (mirrors client). */
+function computeGroundingConfidence(
+  cited: Array<{ citation?: { timestamp?: string } }>
+): "high" | "moderate" | "low" {
+  if (cited.length === 0) return "low";
+  const grounded = cited.filter(
+    (c) => c.citation?.timestamp && c.citation.timestamp !== "00:00"
+  ).length;
+  const share = grounded / cited.length;
+  if (share >= 0.9) return "high";
+  if (share >= 0.5) return "moderate";
+  return "low";
+}
+
 export class SummaryService {
   /**
    * Generates a grounded, multi-perspective summary with exact citation bindings dynamically from the transcript.
@@ -145,7 +200,11 @@ export class SummaryService {
 
     segments.forEach((seg, idx) => {
       const lower = seg.text.toLowerCase();
-      const hasDecision = decisionKeywords.some((kw) => lower.includes(kw));
+      // Phrase keywords match as substrings; single words must match on
+      // word boundaries so unrelated words cannot manufacture decisions.
+      const hasDecision = decisionKeywords.some((kw) =>
+        kw.includes(" ") ? lower.includes(kw) : new RegExp(`\\b${kw}\\b`).test(lower)
+      );
 
       if (hasDecision && decisions.length < 6) {
         let cleanText = seg.text
@@ -162,7 +221,8 @@ export class SummaryService {
         decisions.push({
           id: `dec-dyn-${idx + 1}`,
           text: cleanText,
-          rationale: rationale || "Agreed upon by participants during discussion.",
+          // Only a rationale that was actually spoken; no canned approval.
+          rationale,
           confidence: "high",
           citation: {
             id: `cit-dec-${idx}`,
@@ -175,54 +235,20 @@ export class SummaryService {
       }
     });
 
-    // Fallback decision if conversation was substantive but lacked explicit keywords
-    if (decisions.length === 0 && segments.length >= 2) {
-      const substantiveSeg = segments.find((s) => s.text.length > 30) || segments[0];
-      decisions.push({
-        id: "dec-dyn-1",
-        text: `Participants aligned on: "${substantiveSeg.text.substring(0, 100)}..."`,
-        rationale: "Established as working consensus during the session.",
-        confidence: "tentative",
-        citation: {
-          id: `cit-dec-0`,
-          speaker: substantiveSeg.speaker,
-          timestamp: substantiveSeg.timestamp,
-          rawText: substantiveSeg.text,
-          lineIndex: substantiveSeg.lineIndex ?? 0,
-        },
-      });
-    }
+    // Deliberately NO fallback decision: a transcript with no explicit
+    // decision gets an empty decision log. Promoting the longest segment
+    // into a "working consensus" invented decisions nobody made.
 
-    // 2. Dynamic Action Item Extraction
-    const actionKeywords = [
-      "will prepare",
-      "prepare the",
-      "prepare",
-      "will review",
-      "will create",
-      "will build",
-      "will lead",
-      "will coordinate",
-      "will follow up",
-      "will do",
-      "i will",
-      "i'll",
-      "can you",
-      "please",
-      "assigned to",
-      "action item",
-      "take ownership",
-      "follow up",
-      "update",
-      "provision",
-      "notify",
-      "schedule",
-      "send",
-    ];
-
+    // 2. Dynamic Action Item Extraction — commitment-based (see
+    // hasActionCommitment above). Decision / question / rationale /
+    // context segments are never also action items.
     segments.forEach((seg, idx) => {
       const lower = seg.text.toLowerCase();
-      const hasAction = actionKeywords.some((kw) => lower.includes(kw));
+      const hasDecision = decisionKeywords.some((kw) =>
+        kw.includes(" ") ? lower.includes(kw) : new RegExp(`\\b${kw}\\b`).test(lower)
+      );
+      const kind = hasDecision ? "decision" : classifySegment(seg.text);
+      const hasAction = kind === "other" && hasActionCommitment(seg.text);
 
       if (hasAction && actionItems.length < 8) {
         // Extract possible assignee from segment speaker or direct mention
@@ -258,8 +284,10 @@ export class SummaryService {
         actionItems.push({
           id: `act-dyn-${idx + 1}`,
           task: taskText,
-          assignee: assignee || "Team Member",
-          dueDate: dueDate || "Upcoming Sprint",
+          assignee,
+          // Due date only when one was actually spoken — no fabricated
+          // "Upcoming Sprint" default.
+          dueDate,
           isCompleted: false,
           priority: dueDate ? "high" : "medium",
           citation: {
@@ -277,13 +305,8 @@ export class SummaryService {
     segments.forEach((seg, idx) => {
       const lower = seg.text.toLowerCase();
       const isQuestionOrPending =
-        seg.text.includes("?") ||
-        lower.includes("not sure") ||
-        lower.includes("need to check") ||
-        lower.includes("unresolved") ||
-        lower.includes("open question") ||
-        lower.includes("look into") ||
-        lower.includes("depends on");
+        classifySegment(seg.text) === "question" ||
+        /\b(not sure|need to check|unresolved|open question|depends on)\b/.test(lower);
 
       if (isQuestionOrPending && unresolvedQuestions.length < 5) {
         unresolvedQuestions.push({
@@ -301,49 +324,49 @@ export class SummaryService {
       }
     });
 
-    if (unresolvedQuestions.length === 0 && segments.length >= 1) {
-      const lastSeg = segments[segments.length - 1];
-      unresolvedQuestions.push({
-        id: "q-dyn-1",
-        question: `Confirm final progress and alignment on: "${lastSeg.text.substring(0, 80)}"`,
-        suggestedFollowUp: "Review during next sync to ensure all discussion items are complete.",
-        citation: {
-          id: "cit-q-0",
-          speaker: lastSeg.speaker,
-          timestamp: lastSeg.timestamp,
-          rawText: lastSeg.text,
-          lineIndex: lastSeg.lineIndex ?? 0,
-        },
-      });
-    }
+    // Deliberately NO fallback question: the parking lot stays empty when
+    // nobody left a question open, instead of converting the last segment
+    // into a "confirm final progress" item nobody raised.
 
-    // 4. Dynamic Executive Summary
+    // 4. Dynamic Executive Summary — composed only from grounded extracted
+    // content (plus the detected participant list). No canned openers
+    // ("convened to discuss key operational items…"), no invented
+    // outcomes, and no placeholder due dates in the rendering.
     const speakerList = speakers.length > 0 ? speakers.join(", ") : "The team";
-    let executiveSummary = `Meeting Overview:\n${speakerList} convened to discuss key operational items, review active deliverables, and establish milestones.\n\nKey Outcomes:\n${
+    const formatAction = (a: ActionItem) =>
+      `• ${a.assignee || "Unassigned"}: ${a.task}${a.dueDate ? ` (${a.dueDate})` : ""}`;
+    let executiveSummary = `Meeting Overview:\nParticipants: ${speakerList}.\n\nKey Outcomes:\n${
       decisions.length > 0
         ? decisions.map((d) => `• ${d.text}`).join("\n")
-        : "• Discussion completed with aligned working direction."
+        : "• No explicit decisions were captured in this transcript."
     }\n\nAction Items & Next Steps:\n${
       actionItems.length > 0
-        ? actionItems.map((a) => `• ${a.assignee}: ${a.task} (${a.dueDate || "In progress"})`).join("\n")
+        ? actionItems.map(formatAction).join("\n")
         : "• No explicit action items assigned."
     }`;
 
     if (refinement === "executive") {
-      executiveSummary = `Executive Briefing:\n• Core Focus: Key sync between ${speakerList}.\n• Primary Decisions:\n${
-        decisions.map((d) => `  - ${d.text}`).join("\n") || "  - Consensus reached on core discussion topics."
-      }\n• Immediate Milestones:\n${
-        actionItems.map((a) => `  - ${a.assignee}: ${a.task}`).join("\n") || "  - Team executing on standard timeline."
+      executiveSummary = `Executive Briefing:\n• Participants: ${speakerList}.\n• Primary Decisions:\n${
+        decisions.map((d) => `  - ${d.text}`).join("\n") || "  - No explicit decisions were captured in this transcript."
+      }\n• Immediate Action Items:\n${
+        actionItems.map((a) => `  - ${a.assignee || "Unassigned"}: ${a.task}`).join("\n") || "  - No explicit action items assigned."
       }`;
     } else if (refinement === "action_focused") {
-      executiveSummary = `Action-Focused Digest:\nPrimary focus is executing key follow-ups from the sync.\n${
-        actionItems.map((a) => `• [${a.assignee}] ${a.task} (Due: ${a.dueDate || "TBD"})`).join("\n") || "• No pending actions."
+      executiveSummary = `Action-Focused Digest:\n${
+        actionItems.map((a) => `• [${a.assignee || "Unassigned"}] ${a.task}${a.dueDate ? ` (Due: ${a.dueDate})` : ""}`).join("\n") || "• No pending actions."
       }`;
     } else if (refinement === "technical") {
-      executiveSummary = `Technical Architecture & Execution Scope:\nParticipants (${speakerList}) evaluated technical considerations and operational workflows.\nDecisions:\n${
-        decisions.map((d) => `• ${d.text}`).join("\n") || "• Technical alignment established."
+      executiveSummary = `Technical Architecture & Execution Scope:\nParticipants: ${speakerList}.\nDecisions:\n${
+        decisions.map((d) => `• ${d.text}`).join("\n") || "• No explicit decisions were captured in this transcript."
       }`;
     }
+
+    // Grounding measured from the citations actually emitted.
+    const modelConfidence = computeGroundingConfidence([
+      ...decisions,
+      ...actionItems,
+      ...unresolvedQuestions,
+    ]);
 
     recordingLogger.log({
       event: "SUMMARY_COMPLETED",
@@ -356,7 +379,7 @@ export class SummaryService {
       decisionCount: decisions.length,
       actionItemCount: actionItems.length,
       questionCount: unresolvedQuestions.length,
-      modelConfidence: "high",
+      modelConfidence,
     });
 
     return {
@@ -367,7 +390,7 @@ export class SummaryService {
       detectedSpeakers: speakers,
       wordCount,
       estimatedMeetingDurationMinutes: durationMinutes,
-      modelConfidence: "high",
+      modelConfidence,
       appliedRefinement: refinement,
     };
   }

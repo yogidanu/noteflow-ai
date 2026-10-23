@@ -155,7 +155,10 @@ async function main() {
     const comp = completeEvents[completeEvents.length - 1] as any;
     assert(comp.decisionCount >= 1, "Must track decision count");
     assert(comp.actionItemCount >= 1, "Must track action item count");
-    assert(comp.modelConfidence === "high", "modelConfidence must be high");
+    // Honest grounding rule: this fixture's transcript has no real timestamps
+    // (STT assigns 00:00), so no citation is grounded and confidence must be
+    // "low" — never the old hardcoded "high".
+    assert(comp.modelConfidence === "low", "modelConfidence must be low for an ungrounded (timestamp-less) transcript");
   });
 
   // 6. Complete Session & Sync
