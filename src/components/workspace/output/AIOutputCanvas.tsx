@@ -8,6 +8,7 @@ import { ActionItemsMatrix } from "./ActionItemsMatrix";
 import { QuestionsParkingLot } from "./QuestionsParkingLot";
 import { RefinementChips } from "./RefinementChips";
 import { ShieldCheck, Sparkles, Layers } from "lucide-react";
+import { GenerativeSummarizer } from "../../../lib/llmSummarizer";
 
 interface AIOutputCanvasProps {
   meeting: MeetingNote;
@@ -31,26 +32,37 @@ export const AIOutputCanvas: React.FC<AIOutputCanvasProps> = ({
   isSourceDrawerOpen = false,
 }) => {
   // Grounding labels are derived from the actual analysis, never static:
-  // the share of emitted citations carrying a real (non-"00:00") timestamp
-  // decides what the header may claim, and the summarizer's computed
+  // the share of emitted citations that resolve to their source decides
+  // what the header may claim, and the summarizer's computed
   // modelConfidence decides the accuracy wording in the footer.
+  // Resolution is anchor-aware (GenerativeSummarizer.isCitationGrounded):
+  // time-anchored citations resolve by real timestamp, line-anchored
+  // citations (manual notes — no time domain) resolve by source line, so
+  // a fully line-grounded manual note reads "100% Grounded in Source
+  // Lines", not "0% Grounded" merely for lacking timestamps.
   const allCitations = [
     ...analysis.decisions.map((d) => d.citation),
     ...analysis.actionItems.map((a) => a.citation),
     ...analysis.unresolvedQuestions.map((q) => q.citation),
     ...(analysis.importantDiscussionPoints || []).map((p) => p.citation),
   ].filter(Boolean) as SourceCitation[];
-  const groundedCount = allCitations.filter(
-    (c) => c.timestamp && c.timestamp !== "00:00"
+  const groundedCount = allCitations.filter((c) =>
+    GenerativeSummarizer.isCitationGrounded(c)
   ).length;
   const groundedShare =
     allCitations.length > 0 ? groundedCount / allCitations.length : 0;
+  const allLineAnchored =
+    allCitations.length > 0 &&
+    allCitations.every(
+      (c) => c.anchorKind === "line" || (!c.timestamp && typeof c.lineIndex === "number")
+    );
+  const groundingNoun = allLineAnchored ? "Source Lines" : "Transcript";
   const groundingLabel =
     allCitations.length === 0
       ? "No citations available"
       : groundedShare >= 1
-        ? "100% Grounded in Transcript"
-        : `${Math.round(groundedShare * 100)}% Grounded in Transcript`;
+        ? `100% Grounded in ${groundingNoun}`
+        : `${Math.round(groundedShare * 100)}% Grounded in ${groundingNoun}`;
   const accuracyLabel =
     analysis.modelConfidence === "high"
       ? "Extracted with Source Grounding • High Accuracy"

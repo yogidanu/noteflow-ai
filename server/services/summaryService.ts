@@ -5,6 +5,16 @@ export interface SourceCitation {
   id: string;
   speaker?: string;
   timestamp?: string;
+  /**
+   * Grounding anchor kind (mirrors src/types/meeting.ts). Every citation
+   * produced here is "time": server summaries are built from STT segments,
+   * an audio domain where a "00:00" segment timestamp is an STT fallback
+   * placeholder — a FAILED time anchor that must stay ungrounded. It is
+   * deliberately NOT reclassified as a line anchor: line anchoring is
+   * reserved for authored text (client-side manual notes), whose source
+   * format carries no time syntax at all.
+   */
+  anchorKind?: "time" | "line";
   rawText: string;
   lineIndex?: number;
   isEdited?: boolean;
@@ -94,12 +104,27 @@ function classifySegment(text: string): "decision" | "question" | "rationale" | 
 
 /** Grounding measured from citations, never asserted (mirrors client). */
 function computeGroundingConfidence(
-  cited: Array<{ citation?: { timestamp?: string } }>
+  cited: Array<{
+    citation?: {
+      timestamp?: string;
+      anchorKind?: "time" | "line";
+      lineIndex?: number;
+      rawText?: string;
+    };
+  }>
 ): "high" | "moderate" | "low" {
   if (cited.length === 0) return "low";
-  const grounded = cited.filter(
-    (c) => c.citation?.timestamp && c.citation.timestamp !== "00:00"
-  ).length;
+  const grounded = cited.filter((c) => {
+    const citation = c.citation;
+    if (!citation) return false;
+    // Line-anchored citations (authored text) resolve by source line;
+    // everything else — including all STT-segment citations here —
+    // resolves only by a real, non-fallback timestamp.
+    if (citation.anchorKind === "line") {
+      return typeof citation.lineIndex === "number" && Boolean(citation.rawText);
+    }
+    return Boolean(citation.timestamp) && citation.timestamp !== "00:00";
+  }).length;
   const share = grounded / cited.length;
   if (share >= 0.9) return "high";
   if (share >= 0.5) return "moderate";
@@ -228,6 +253,7 @@ export class SummaryService {
             id: `cit-dec-${idx}`,
             speaker: seg.speaker,
             timestamp: seg.timestamp,
+            anchorKind: "time",
             rawText: seg.text,
             lineIndex: seg.lineIndex ?? idx,
           },
@@ -294,6 +320,7 @@ export class SummaryService {
             id: `cit-act-${idx}`,
             speaker: seg.speaker,
             timestamp: seg.timestamp,
+            anchorKind: "time",
             rawText: seg.text,
             lineIndex: seg.lineIndex ?? idx,
           },
@@ -317,6 +344,7 @@ export class SummaryService {
             id: `cit-q-${idx}`,
             speaker: seg.speaker,
             timestamp: seg.timestamp,
+            anchorKind: "time",
             rawText: seg.text,
             lineIndex: seg.lineIndex ?? idx,
           },
@@ -402,6 +430,7 @@ export class SummaryService {
         id: `cit-${match.lineIndex}`,
         speaker: match.speaker,
         timestamp: match.timestamp,
+        anchorKind: "time",
         rawText: match.text,
         lineIndex: match.lineIndex,
       };
@@ -410,6 +439,7 @@ export class SummaryService {
       id: `cit-fallback-${Date.now()}`,
       speaker: segments[0]?.speaker || "Speaker",
       timestamp: segments[0]?.timestamp || "00:00",
+      anchorKind: "time",
       rawText: snippet,
       lineIndex: 0,
     };

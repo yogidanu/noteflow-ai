@@ -9,6 +9,18 @@ export interface SanitizedResult {
     timestamp?: string;
     text: string;
     originalIndex: number;
+    /**
+     * Grounding anchor for citations built on this line. "time" when the
+     * line's timestamp was parsed from actual time syntax in the source
+     * (recorder "[MM:SS]", "[MM:SS] Speaker:", VTT/SRT cue times) — the
+     * line belongs to a timed/audio domain. "line" when the source is
+     * authored text with no time syntax (pasted notes, "Speaker: text"):
+     * the line itself is the anchor, and citations must reference the
+     * line, never a fabricated "00:00" timestamp. NOTE: a recorder line
+     * stamped with a literal "00:00" is still "time" — that value is an
+     * STT/recorder fallback (a FAILED time anchor), not authored text.
+     */
+    anchorKind: "time" | "line";
   }>;
 }
 
@@ -125,11 +137,17 @@ export function sanitizeTranscript(raw: string): SanitizedResult {
     timestamp?: string;
     text: string;
     originalIndex: number;
+    anchorKind: "time" | "line";
   }> = [];
 
   const rawLines = raw.split(/\r?\n/);
   let currentSpeaker: string | undefined = undefined;
   let currentTimestamp: string | undefined = undefined;
+  // Anchor provenance of currentTimestamp: "time" only while it holds a
+  // value parsed from real time syntax (a VTT/SRT cue line). Plain text
+  // lines start line-anchored; a timestamp inherited from an earlier
+  // timed line keeps that line's time provenance.
+  let currentAnchorKind: "time" | "line" = "line";
 
   for (let i = 0; i < rawLines.length; i++) {
     const rawLine = rawLines[i].trim();
@@ -146,8 +164,13 @@ export function sanitizeTranscript(raw: string): SanitizedResult {
       if (currentTimestamp.startsWith("00:")) {
         currentTimestamp = currentTimestamp.substring(3);
       }
+      currentAnchorKind = "time";
       continue;
     }
+
+    // Anchor for THIS line: upgraded to "time" when the line itself
+    // carries parsed time syntax (recorder / bracket-time formats below).
+    let lineAnchorKind: "time" | "line" = currentAnchorKind;
 
     // Check for speaker pattern: <v Sarah Chen> or [00:12] Alex: or Speaker 1: or Yogesh:
     let lineText = rawLine;
@@ -168,6 +191,8 @@ export function sanitizeTranscript(raw: string): SanitizedResult {
         currentTimestamp = recorderFormat[2];
         lineText = recorderFormat[3].trim();
         speakerSet.add(currentSpeaker);
+        lineAnchorKind = "time";
+        currentAnchorKind = "time";
       } else {
       // Look for "[10:24] Sarah:" or "Speaker 1:" or "Yogesh:"
       const bracketTime = lineText.match(/^\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*([^:]+):\s*(.*)$/);
@@ -176,6 +201,8 @@ export function sanitizeTranscript(raw: string): SanitizedResult {
         currentSpeaker = bracketTime[2].trim();
         lineText = bracketTime[3].trim();
         speakerSet.add(currentSpeaker);
+        lineAnchorKind = "time";
+        currentAnchorKind = "time";
       } else {
         const colonSpeaker = lineText.match(/^(Speaker\s+\d+|[A-Z][a-zA-Z0-9_\s]{1,25}):\s*(.*)$/);
         if (colonSpeaker) {
@@ -195,9 +222,13 @@ export function sanitizeTranscript(raw: string): SanitizedResult {
     if (lineText) {
       parsedLines.push({
         speaker: currentSpeaker,
-        timestamp: currentTimestamp,
+        // A line-anchored (authored-text) line must not inherit or invent
+        // a timestamp: its citation anchor is the line itself. Timed lines
+        // keep the timestamp parsed from the source.
+        timestamp: lineAnchorKind === "time" ? currentTimestamp : undefined,
         text: lineText,
-        originalIndex: i
+        originalIndex: i,
+        anchorKind: lineAnchorKind
       });
     }
   }

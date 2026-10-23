@@ -151,15 +151,21 @@ function main() {
 
   runTest("modelConfidence is computed from grounding, not hardcoded filler", () => {
     // All citations in this fixture resolve to real timestamps, so a high
-    // rating is earned here — but the no-timestamp case must degrade.
+    // rating is earned here — but a FAILED time anchor must degrade.
     assert(result.modelConfidence === "high", `Fully grounded fixture should earn "high", got ${result.modelConfidence}`);
-    const noTimes = sanitizeTranscript(
-      "Alex: we decided to ship the beta on Friday\nAlex: I will send the notes tomorrow"
+    // Updated for the line-anchor fix (see discussion-titles-line-anchors
+    // suite): plain pasted text ("Alex: …") is authored text whose lines
+    // are line-anchored and CAN earn high via line resolution, so it is
+    // no longer the degradation case. What must still degrade is a
+    // recorder/STT line stamped with the literal "00:00" fallback — a
+    // failed time anchor, not authored text.
+    const zeroTimed = sanitizeTranscript(
+      "Alex [00:00]: we decided to ship the beta on Friday\nAlex [00:00]: I will send the notes tomorrow"
     );
-    const degraded = GenerativeSummarizer.synthesize(noTimes, "standard");
+    const degraded = GenerativeSummarizer.synthesize(zeroTimed, "standard");
     assert(
       degraded.modelConfidence !== "high",
-      `Citations without timestamps must not report "high" confidence, got ${degraded.modelConfidence}`
+      `Citations stamped with the STT "00:00" fallback must not report "high" confidence, got ${degraded.modelConfidence}`
     );
   });
 
