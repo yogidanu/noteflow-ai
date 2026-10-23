@@ -399,12 +399,87 @@ export class GenerativeSummarizer {
   /**
    * Transforms conversational agreements into definitive, executive decisions.
    */
+  /** Past-time framing used by the historical-decision guard (Fix 5a). */
+  private static readonly PAST_TIME_MARKERS =
+    /\b(last year|last quarter|last month|last week|previously|back then|years ago)\b/i;
+
+  /**
+   * A decision REPORTED from the past is not a decision OF this meeting
+   * (evaluation S2: "Last year we decided to use spreadsheets…" entered
+   * the Decision Log). A line is historical when it carries a past-time
+   * marker AND a simple-past decision verb ("we decided", "they
+   * agreed") — present-perfect framing ("we have decided…", even in
+   * "Based on last year's results, we have decided…") is a live
+   * decision and is never historical.
+   */
+  private static isHistoricalDecision(text: string): boolean {
+    const lower = text.toLowerCase();
+    if (!this.PAST_TIME_MARKERS.test(lower)) return false;
+    if (/\b(have|has)\s+(decided|agreed)\b/.test(lower)) return false;
+    return /\b(decided|agreed)\b/.test(lower);
+  }
+
+  /** Words that mark a decision as overturning an earlier one (Fix 4). */
+  private static readonly REVERSER_MARKERS =
+    /\b(postpone|postponed|delay|delayed|defer|deferred|cancel|cancelled|cancels|drop|dropped|remove|removed|scrap|abandon|revert|roll\s?back|pause|paused|hold off|no longer|instead)\b/i;
+
+  /** Function/decision-framing words excluded from topic overlap (Fix 4). */
+  private static readonly DECISION_STOPWORDS = new Set([
+    "we", "have", "has", "had", "decided", "agreed", "decision", "agreement",
+    "to", "the", "a", "an", "on", "for", "all", "and", "or", "is", "it",
+    "this", "that", "until", "before", "with", "from", "our", "your",
+    "their", "will", "would", "should", "first", "be", "been", "by", "at",
+    "in", "of", "into", "are", "was", "were", "because", "as", "so",
+  ]);
+
+  /** Significant content words of a decision line, for topic overlap. */
+  private static decisionContentWords(text: string): Set<string> {
+    return new Set(
+      text
+        .toLowerCase()
+        .replace(/[^a-z0-9.\s]/g, " ")
+        .split(/\s+/)
+        .filter((w) => w.length >= 2 && !this.DECISION_STOPWORDS.has(w))
+    );
+  }
+
+  /**
+   * Final-state Decision Log (Fix 4, evaluation S4): a later decision
+   * whose line carries a reversal marker ("postpone… instead",
+   * "roll back", "remove") supersedes an earlier decision about the
+   * SAME topic — significant content-word overlap of at least 2, so a
+   * single shared word (a month name alone, S1's "remove the referral
+   * widget" vs the March launch) can never supersede, and a reverser
+   * about a different topic (S3's "roll back the recommendation
+   * service" vs the migration postponement, zero overlap) stays a
+   * normal standing decision. Superseded decisions are removed: the
+   * log reflects what the meeting finally decided.
+   */
+  private static removeSupersededDecisions<T extends { sourceText: string }>(
+    collected: T[]
+  ): T[] {
+    const removed = new Set<number>();
+    const wordSets = collected.map((c) => this.decisionContentWords(c.sourceText));
+    collected.forEach((entry, j) => {
+      if (!this.REVERSER_MARKERS.test(entry.sourceText)) return;
+      for (let i = 0; i < j; i++) {
+        if (removed.has(i)) continue;
+        let overlap = 0;
+        wordSets[i].forEach((w) => {
+          if (wordSets[j].has(w)) overlap++;
+        });
+        if (overlap >= 2) removed.add(i);
+      }
+    });
+    return collected.filter((_, i) => !removed.has(i));
+  }
+
   private static buildKeyDecisions(
     sources: SanitizedResult["lines"],
     lines: string[],
     refinement: RefinementPromptType
   ): DecisionItem[] {
-    const decisions: DecisionItem[] = [];
+    const collected: Array<{ item: DecisionItem; sourceText: string }> = [];
 
     lines.forEach((line, idx) => {
       // Word-boundary matching only — substring hits inside unrelated
@@ -413,7 +488,11 @@ export class GenerativeSummarizer {
         this.classifyLine(line) === "decision" ||
         /\b(go with|plan is|launch date|target date)\b/i.test(line);
 
-      if (isDecision && decisions.length < 5) {
+      // Fix 5a: a decision framed in the past is history, not a
+      // decision of this meeting.
+      if (isDecision && this.isHistoricalDecision(line)) return;
+
+      if (isDecision && collected.length < 5) {
         const clean = this.cleanDialogue(line);
         const polishedDecision = this.toProfessionalDecision(clean);
         const sourceLine = sources[idx] || sources[0];
@@ -434,15 +513,24 @@ export class GenerativeSummarizer {
           }
         }
 
-        decisions.push({
-          id: `dec-${Math.random().toString(36).substr(2, 9)}`,
-          text: polishedDecision,
-          rationale,
-          confidence: "high",
-          citation: this.buildCitation(`cit-dec-${idx}`, sourceLine, line, idx),
+        collected.push({
+          item: {
+            id: `dec-${Math.random().toString(36).substr(2, 9)}`,
+            text: polishedDecision,
+            rationale,
+            confidence: "high",
+            citation: this.buildCitation(`cit-dec-${idx}`, sourceLine, line, idx),
+          },
+          sourceText: line,
         });
       }
     });
+
+    // Fix 4: drop decisions a later decision reversed, so the log
+    // reflects the meeting's final state.
+    const decisions = this.removeSupersededDecisions(collected).map(
+      (c) => c.item
+    );
 
     // No explicit decision in the transcript means the decision log stays
     // empty. Inventing an "adopted working strategy" from the first line
@@ -468,6 +556,28 @@ export class GenerativeSummarizer {
       const kind = this.classifyLine(line);
       if (kind !== "other") return;
       if (!this.hasActionCommitment(line)) return;
+      // Fix 5b: a habitual "will" describes a routine, not a commitment
+      // (evaluation S2: "On busy weeks I will usually spend about three
+      // hours just cleaning…" became a task for the participant).
+      if (
+        /\bwill\s+(usually|typically|generally|often|always|normally)\b/i.test(line)
+      ) {
+        return;
+      }
+      // Fix 5d: a vague closing revisit ("we will come back to these
+      // ideas…") with no concrete deliverable verb is not a task
+      // (evaluation S5). A line that also commits to a deliverable
+      // ("…come back to the office and send the contract") stays.
+      if (
+        /\b(come back to (these|this|those|it)|circle back|revisit (this|these|it|them) later|discuss (this|it) later)\b/i.test(
+          line
+        ) &&
+        !/\b(send|share|prepare|create|update|review|schedule|assign|fix|test|draft|write|build|ship|resolve|finish|complete)\b/i.test(
+          line
+        )
+      ) {
+        return;
+      }
       if (actions.length >= 6) return;
 
       const sourceLine = sources[idx] || sources[0];
@@ -538,10 +648,45 @@ export class GenerativeSummarizer {
       }
     });
 
+    // Fix 5c: a question that was ANSWERED is not unresolved. An
+    // ordinary (Tier 2) candidate is suppressed when the immediately
+    // following line is a substantive (> 15 chars) statement by a
+    // DIFFERENT speaker — the answer in an interview (evaluation S2,
+    // where all three interviewer questions were answered on the spot)
+    // or the next contribution in a brainstorm (S5). Tier 1 (explicitly
+    // parked) candidates are never suppressed, and neither is a
+    // candidate with no following line, one followed by the same
+    // speaker, or one followed by another ordinary question (a real
+    // follow-up exchange). A following Tier 1 line does not block
+    // suppression: the conversation explicitly moved on to a parked
+    // topic (S5's "Should we explore…?" is followed directly by the
+    // parked pricing line, and the evaluation's end state counts it as
+    // answered-by-moving-on, not unresolved).
+    const candidateIdx = new Set(candidates.map((c) => c.idx));
+    const liveCandidates = candidates.filter(({ idx, parked }) => {
+      if (parked) return true;
+      const nextIdx = idx + 1;
+      if (nextIdx >= lines.length) return true;
+      const thisSpeaker = sources[idx]?.speaker;
+      const nextSpeaker = sources[nextIdx]?.speaker;
+      if (!thisSpeaker || !nextSpeaker || nextSpeaker === thisSpeaker) {
+        return true;
+      }
+      if (lines[nextIdx].trim().length <= 15) return true;
+      if (
+        candidateIdx.has(nextIdx) &&
+        !PARKED_MARKERS.test(lines[nextIdx]) &&
+        this.classifyLine(lines[nextIdx]) === "question"
+      ) {
+        return true;
+      }
+      return false;
+    });
+
     const MAX_QUESTIONS = 5;
     const selected = [
-      ...candidates.filter((c) => c.parked),
-      ...candidates.filter((c) => !c.parked),
+      ...liveCandidates.filter((c) => c.parked),
+      ...liveCandidates.filter((c) => !c.parked),
     ]
       .slice(0, MAX_QUESTIONS)
       .sort((a, b) => a.idx - b.idx);
