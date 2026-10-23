@@ -8,8 +8,11 @@
  * - Captures strategic open questions and parking lot topics with recommended follow-up actions.
  */
 
-import { AIAnalysisResult, DecisionItem, ActionItem, UnresolvedQuestion, RefinementPromptType } from "../types/meeting";
+import { AIAnalysisResult, DecisionItem, ActionItem, UnresolvedQuestion, DiscussionPoint, RefinementPromptType } from "../types/meeting";
 import { SanitizedResult } from "./transcriptSanitizer";
+
+/** Discussion-topic classification used by buildDiscussionTopics. */
+export type TopicKind = "context" | "decision" | "rationale" | "action" | "question" | "other";
 
 export interface GenerativeSummaryOptions {
   refinement?: RefinementPromptType;
@@ -60,13 +63,17 @@ export class GenerativeSummarizer {
     const importantDiscussionPoints = this.buildDiscussionTopics(rawSources, rawLines);
 
     // 6. Grounding is measured, not asserted: confidence reflects the share
-    // of emitted citations that carry a real (non-fallback) timestamp.
-    const modelConfidence = this.computeGroundingConfidence([
-      ...decisions,
-      ...actionItems,
-      ...unresolvedQuestions,
-      ...importantDiscussionPoints,
-    ]);
+    // of emitted citations that resolve to their source — by timestamp for
+    // timed/audio input, by source line for authored (manual-note) text.
+    const modelConfidence = this.computeGroundingConfidence(
+      [
+        ...decisions,
+        ...actionItems,
+        ...unresolvedQuestions,
+        ...importantDiscussionPoints,
+      ],
+      rawSources
+    );
 
     return {
       executiveSummary,
@@ -83,23 +90,89 @@ export class GenerativeSummarizer {
   }
 
   /**
-   * Share of citations carrying a real timestamp, mapped to a confidence
-   * level. A citation with no timestamp (or the legacy "00:00" fallback)
-   * is ungrounded: the reader cannot fact-check it, so it must not be
-   * presented as high confidence. No citations at all is "low" — there is
-   * nothing verifiable in the output.
+   * Whether one citation actually resolves to its source.
+   *
+   * Time-anchored citations (recorder / VTT / STT input) resolve by a real
+   * timestamp: no timestamp, or the STT fallback "00:00", is ungrounded —
+   * the reader cannot fact-check it. Line-anchored citations (authored
+   * text such as a pasted manual note, which has no time domain) resolve
+   * by source line: a valid lineIndex, and — when the source lines are
+   * available — a rawText that matches the line at that index. Citations
+   * without an anchor kind (legacy/sample data) are treated as
+   * time-anchored, preserving the previous rule.
+   */
+  public static isCitationGrounded(
+    citation:
+      | {
+          timestamp?: string;
+          anchorKind?: "time" | "line";
+          lineIndex?: number;
+          rawText?: string;
+        }
+      | undefined,
+    sources?: SanitizedResult["lines"]
+  ): boolean {
+    if (!citation) return false;
+    if (citation.anchorKind === "line") {
+      if (typeof citation.lineIndex !== "number" || !citation.rawText) {
+        return false;
+      }
+      if (!sources) return true;
+      const source = sources.find((l) => l.originalIndex === citation.lineIndex);
+      return Boolean(source) && source!.text.trim() === citation.rawText.trim();
+    }
+    return Boolean(citation.timestamp) && citation.timestamp !== "00:00";
+  }
+
+  /**
+   * Share of grounded citations (see isCitationGrounded), mapped to a
+   * confidence level. No citations at all is "low" — there is nothing
+   * verifiable in the output.
    */
   public static computeGroundingConfidence(
-    cited: Array<{ citation?: { timestamp?: string } }>
+    cited: Array<{
+      citation?: {
+        timestamp?: string;
+        anchorKind?: "time" | "line";
+        lineIndex?: number;
+        rawText?: string;
+      };
+    }>,
+    sources?: SanitizedResult["lines"]
   ): "high" | "moderate" | "low" {
     if (cited.length === 0) return "low";
-    const grounded = cited.filter(
-      (c) => c.citation?.timestamp && c.citation.timestamp !== "00:00"
+    const grounded = cited.filter((c) =>
+      this.isCitationGrounded(c.citation, sources)
     ).length;
     const share = grounded / cited.length;
     if (share >= 0.9) return "high";
     if (share >= 0.5) return "moderate";
     return "low";
+  }
+
+  /**
+   * Builds the citation for a source line, carrying the line's anchor
+   * kind. Time-anchored lines keep their parsed timestamp (a literal
+   * "00:00" STT stamp stays visible as the failed time anchor it is, and
+   * fails the grounding check). Line-anchored lines carry NO timestamp —
+   * never a fabricated "00:00" — and are referenced by lineIndex.
+   */
+  private static buildCitation(
+    id: string,
+    sourceLine: SanitizedResult["lines"][number] | undefined,
+    rawText: string,
+    fallbackIndex: number
+  ) {
+    const anchorKind: "time" | "line" =
+      sourceLine?.anchorKind ?? (sourceLine?.timestamp ? "time" : "line");
+    return {
+      id,
+      speaker: sourceLine?.speaker || "Speaker",
+      timestamp: anchorKind === "time" ? sourceLine?.timestamp : undefined,
+      anchorKind,
+      rawText,
+      lineIndex: sourceLine?.originalIndex ?? fallbackIndex,
+    };
   }
 
   /**
@@ -253,13 +326,7 @@ export class GenerativeSummarizer {
           text: polishedDecision,
           rationale,
           confidence: "high",
-          citation: {
-            id: `cit-dec-${idx}`,
-            speaker: sourceLine?.speaker || "Speaker",
-            timestamp: sourceLine?.timestamp || "00:00",
-            rawText: line,
-            lineIndex: sourceLine?.originalIndex ?? idx,
-          },
+          citation: this.buildCitation(`cit-dec-${idx}`, sourceLine, line, idx),
         });
       }
     });
@@ -306,13 +373,7 @@ export class GenerativeSummarizer {
         dueDate,
         isCompleted: false,
         priority: actions.length === 0 ? "high" : "medium",
-        citation: {
-          id: `cit-act-${idx}`,
-          speaker: sourceLine?.speaker || "Speaker",
-          timestamp: sourceLine?.timestamp || "00:00",
-          rawText: line,
-          lineIndex: sourceLine?.originalIndex ?? idx,
-        },
+        citation: this.buildCitation(`cit-act-${idx}`, sourceLine, line, idx),
       });
     });
 
@@ -344,13 +405,7 @@ export class GenerativeSummarizer {
           id: `q-${Math.random().toString(36).substr(2, 9)}`,
           question: cleanQ,
           suggestedFollowUp: "Review during upcoming sync to finalize requirements and dependency.",
-          citation: {
-            id: `cit-q-${idx}`,
-            speaker: sourceLine?.speaker || "Speaker",
-            timestamp: sourceLine?.timestamp || "00:00",
-            rawText: line,
-            lineIndex: sourceLine?.originalIndex ?? idx,
-          },
+          citation: this.buildCitation(`cit-q-${idx}`, sourceLine, line, idx),
         });
       }
     });
@@ -362,26 +417,210 @@ export class GenerativeSummarizer {
   }
 
   /**
-   * Formats thematic discussion topics.
+   * Topic-level line classification: classifyLine's kinds plus "action"
+   * for lines carrying a commitment (see hasActionCommitment).
+   */
+  private static topicKind(text: string): TopicKind {
+    const kind = this.classifyLine(text);
+    if (kind !== "other") return kind;
+    return this.hasActionCommitment(text) ? "action" : "other";
+  }
+
+  /**
+   * Builds discussion topics: one topic per distinct classified theme
+   * present in the meeting (context / decision / rationale / action /
+   * question), in source order, capped at 5. "Other" lines each carry
+   * their own theme and are only used while slots remain. This replaces
+   * the positional `lines.slice(0, 4)`, which dropped later themes (the
+   * open question was never a topic) and promoted any early line,
+   * whatever it was, to a "topic".
    */
   private static buildDiscussionTopics(sources: SanitizedResult["lines"], lines: string[]) {
-    return lines.slice(0, 4).map((line, idx) => {
-      const sourceLine = sources[idx] || sources[0];
+    const seenKinds = new Set<string>();
+    const topics: DiscussionPoint[] = [];
+
+    lines.forEach((line, idx) => {
+      if (topics.length >= 5) return;
       const clean = this.cleanDialogue(line);
-      return {
-        id: `disc-${Math.random().toString(36).substr(2, 9)}`,
-        topic: this.toProfessionalTitle(clean),
-        summary: this.toProfessionalSentence(clean),
-        speakers: sourceLine?.speaker ? [sourceLine.speaker] : undefined,
-        citation: {
-          id: `cit-disc-${idx}`,
-          speaker: sourceLine?.speaker || "Speaker",
-          timestamp: sourceLine?.timestamp || "00:00",
-          rawText: line,
-          lineIndex: sourceLine?.originalIndex ?? idx,
-        },
-      };
+      if (clean.length <= 3) return;
+      const kind = this.topicKind(clean);
+      if (kind !== "other") {
+        if (seenKinds.has(kind)) return;
+        seenKinds.add(kind);
+      }
+      topics.push(this.buildDiscussionTopic(sources, idx, line, clean, kind));
     });
+
+    return topics;
+  }
+
+  private static buildDiscussionTopic(
+    sources: SanitizedResult["lines"],
+    idx: number,
+    rawLine: string,
+    clean: string,
+    kind: TopicKind
+  ) {
+    const sourceLine = sources[idx] || sources[0];
+    const summary = this.toProfessionalSentence(clean);
+    let topic = this.buildTopicTitle(kind, clean);
+    // Hard guarantee, independent of the generator's rules: a title must
+    // never be a prefix of its own summary (the original defect). Fall
+    // back to the category title, which is thematic by construction.
+    if (summary.toLowerCase().startsWith(topic.toLowerCase())) {
+      topic = this.categoryTitle(kind);
+    }
+    return {
+      id: `disc-${Math.random().toString(36).substr(2, 9)}`,
+      topic,
+      summary,
+      speakers: sourceLine?.speaker ? [sourceLine.speaker] : undefined,
+      citation: this.buildCitation(`cit-disc-${idx}`, sourceLine, rawLine, idx),
+    };
+  }
+
+  /** Category titles: thematic fallbacks, never derived from line text. */
+  private static categoryTitle(kind: TopicKind): string {
+    switch (kind) {
+      case "context":
+        return "Meeting context & goals";
+      case "decision":
+        return "Key decision";
+      case "rationale":
+        return "Rationale & supporting reasons";
+      case "action":
+        return "Action items & owners";
+      case "question":
+        return "Open questions";
+      default:
+        return "Key discussion point";
+    }
+  }
+
+  /**
+   * Rule-based, deterministic discussion-topic titles. A title is a
+   * short noun-phrase THEME abstracted from the line — never the line's
+   * first words (the previous implementation returned
+   * `text.split(" ").slice(0, 4)`, so every title was a fragment of the
+   * summary printed directly beneath it: "This is a planning" /
+   * "We have decided to").
+   *
+   * Strategy per classification:
+   *  - context:  the object of the meeting ("…for the NoteFlow AI public
+   *    beta") plus its framing ("— planning check-in" when present).
+   *  - decision: the decision OBJECT after the decision verb
+   *    ("launch the public beta to our waitlist first, before…" →
+   *    "Waitlist-first launch before team workspaces" when a waitlist
+   *    launch is the object; otherwise the object clause itself).
+   *  - rationale: the reason content after the rationale marker
+   *    ("the reason is simple — we want real feedback from…" →
+   *    "Rationale: real feedback from product managers and designers").
+   *  - action:   the work theme from the commitment ("assign any bugs…
+   *    review those fixes" → "Bug assignment and fix review").
+   *  - question: the subject under question ("whether team workspaces
+   *    should be included in the free beta or… Pro tier" →
+   *    "Team workspaces: free beta or Pro tier?").
+   *  - other:    a salient domain noun ("roadmap", "pricing", …) as a
+   *    discussion theme, else the category title.
+   * When a rule cannot abstract a theme it returns the category title —
+   * never a text prefix.
+   */
+  private static buildTopicTitle(
+    kind: TopicKind,
+    clean: string
+  ): string {
+    const lower = clean.toLowerCase();
+    const cap = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+    const capWords = (s: string, n: number) =>
+      s.split(/\s+/).filter(Boolean).slice(0, n).join(" ");
+
+    switch (kind) {
+      case "context": {
+        const forMatch = clean.match(/\bfor\s+(?:the\s+)?(.+?)(?:\.|$)/i);
+        const object = forMatch ? forMatch[1].trim() : "";
+        if (object) {
+          const framing = /check[-\s]?in/i.test(lower)
+            ? " — planning check-in"
+            : /kick[-\s]?off/i.test(lower)
+              ? " — kick-off"
+              : "";
+          return capWords(`${cap(object)}${framing}`, 9);
+        }
+        return this.categoryTitle(kind);
+      }
+      case "decision": {
+        const rest = clean
+          .replace(
+            /^(we have decided to|we decided to|we have agreed to|we agreed to|we decided|we agreed|i decided|decision reached:?|decision:?|let's|we should)\s*/i,
+            ""
+          )
+          .trim();
+        if (!rest) return this.categoryTitle(kind);
+        if (/\bwaitlist\b/i.test(rest) && /\blaunch\b/i.test(rest)) {
+          return /\bteam workspaces?\b/i.test(rest)
+            ? "Waitlist-first launch before team workspaces"
+            : "Waitlist-first launch";
+        }
+        // Object clause: up to the first comma, minus a trailing "first".
+        const clause = rest.split(",")[0].replace(/\s+first$/i, "").trim();
+        return capWords(cap(clause), 8) || this.categoryTitle(kind);
+      }
+      case "rationale": {
+        const body = clean
+          .replace(/^(the reason is simple|the reason is|reason is|reason:)\s*[—–-]?\s*/i, "")
+          .replace(/^we want\s*/i, "")
+          .trim();
+        const feedback = body.match(/((?:real\s+)?feedback from [^.]+?)(?:\s+before\s+|\.|$)/i);
+        if (feedback) {
+          const phrase = feedback[1].replace(/\bindividual\s+/gi, "").trim();
+          return capWords(`Rationale: ${phrase}`, 9);
+        }
+        const clause = body.split(/\s+before\s+|,/i)[0].trim();
+        return clause
+          ? capWords(`Rationale: ${clause}`, 9)
+          : this.categoryTitle(kind);
+      }
+      case "action": {
+        const themes: string[] = [];
+        if (
+          /\bbugs?\b/i.test(lower) &&
+          (/\bassign\b/i.test(lower) || /\bdevelopers?\b/i.test(lower))
+        ) {
+          // "assign any bugs…" or "bugs … directly to the respective
+          // developers" — both are bug assignment.
+          themes.push("Bug assignment");
+        }
+        if (/\breview\b/i.test(lower) && /\bfix/i.test(lower)) {
+          themes.push(themes.length ? "fix review" : "Fix review");
+        }
+        if (themes.length) {
+          return capWords(themes.join(" and "), 9);
+        }
+        if (/\bbugs?\b/i.test(lower)) return "Bug triage and follow-up";
+        // Generic commitment: theme from the verb phrase after "will".
+        const willMatch = clean.match(/\bwill\s+(.+)/i);
+        const verbPhrase = willMatch ? willMatch[1].split(/,|\s+and\s+/i)[0].trim() : "";
+        return verbPhrase
+          ? capWords(cap(verbPhrase), 7)
+          : this.categoryTitle(kind);
+      }
+      case "question": {
+        if (/\bteam workspaces?\b/i.test(lower) && /\bfree beta\b/i.test(lower)) {
+          return "Team workspaces: free beta or Pro tier?";
+        }
+        const whether = clean.match(/\bwhether\s+(.+)/i);
+        const subject = (whether ? whether[1] : clean)
+          .split(/,|\s+or\s+kept\s+|\s+or\s+should\s+/i)[0]
+          .trim();
+        return subject ? `${capWords(cap(subject), 7)}?` : this.categoryTitle(kind);
+      }
+      default: {
+        const salient = lower.match(
+          /\b(roadmap|pricing|onboarding|budget|migration|hiring|security|performance|design system|timeline|scope)\b/i
+        );
+        return salient ? `${cap(salient[1])} discussion` : this.categoryTitle(kind);
+      }
+    }
   }
 
   // --- NLP & Text Refinement Helpers ---
@@ -431,11 +670,6 @@ export class GenerativeSummarizer {
     let clean = text.charAt(0).toUpperCase() + text.slice(1);
     if (!clean.endsWith("?")) clean += "?";
     return clean;
-  }
-
-  private static toProfessionalTitle(text: string): string {
-    const words = text.split(" ").slice(0, 4).join(" ");
-    return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Key Discussion Topic";
   }
 
   private static inferAssignee(text: string, speakers: string[]): string | undefined {

@@ -71,21 +71,44 @@ export function validateAudioBuffer(buffer?: Buffer): AudioValidationResult {
 }
 
 /**
- * Deepgram keyword boosting for NoteFlow domain vocabulary (Nova-2
- * `keywords` query params — repeated, one term each). This is the upstream
+ * Deepgram keyterm prompting for NoteFlow domain vocabulary (Nova-3
+ * `keyterm` query params — repeated, one term each). This is the upstream
  * fix for the homophone errors the post-STT correction dictionary patches
  * downstream: NoteFlow (→"nuclear"), waitlist (→"weightless") and
  * Pro tier (→"prodigal") in the 2026-10-23 live run.
- * Note: `keyterm` prompting is a Nova-3 parameter and is deliberately NOT
- * sent while the request pins model=nova-2.
+ *
+ * History: this previously sent Nova-2 `keywords` and deliberately did
+ * NOT send `keyterm`, because keyterm is a Nova-3 parameter. The request
+ * now pins model=nova-3 (see buildDeepgramParams), so keyterm is the
+ * correct — and only — vocabulary-boosting parameter to send; the Nova-2
+ * `keywords` param is no longer sent.
  */
-export const DEEPGRAM_KEYWORDS = [
+export const DEEPGRAM_KEYTERMS = [
   "NoteFlow",
   "NoteFlow AI",
   "waitlist",
   "Pro tier",
   "end-to-end",
 ] as const;
+
+/**
+ * Builds the Deepgram prerecorded-transcription query params.
+ * Extracted as a pure helper so the model/keyterm contract is testable
+ * offline (no API key or network needed).
+ */
+export function buildDeepgramParams(): URLSearchParams {
+  const dgParams = new URLSearchParams({
+    model: "nova-3",
+    diarize: "true",
+    smart_format: "true",
+    punctuate: "true",
+    utterances: "true",
+  });
+  for (const keyterm of DEEPGRAM_KEYTERMS) {
+    dgParams.append("keyterm", keyterm);
+  }
+  return dgParams;
+}
 
 /**
  * Server-side copy of the client's conservative, context-bound domain
@@ -157,19 +180,10 @@ export class SpeechToTextService {
       mimeType: params.mimeType || "audio/webm",
     });
 
-    // 1. Live Deepgram Nova-2 STT Pipeline if API key and audio buffer are provided
+    // 1. Live Deepgram Nova-3 STT Pipeline if API key and audio buffer are provided
     if (deepgramKey && !deepgramKey.includes("sample") && params.audioBuffer && params.audioBuffer.length > 0) {
       try {
-        const dgParams = new URLSearchParams({
-          model: "nova-2",
-          diarize: "true",
-          smart_format: "true",
-          punctuate: "true",
-          utterances: "true",
-        });
-        for (const keyword of DEEPGRAM_KEYWORDS) {
-          dgParams.append("keywords", keyword);
-        }
+        const dgParams = buildDeepgramParams();
         const response = await fetch(
           `https://api.deepgram.com/v1/listen?${dgParams.toString()}`,
           {

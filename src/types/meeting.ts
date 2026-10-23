@@ -1,7 +1,15 @@
 export interface SourceCitation {
   id: string;
   speaker?: string;
-  timestamp?: string; // e.g. "14:22"
+  timestamp?: string; // e.g. "14:22" — only for time-anchored citations
+  /**
+   * Grounding anchor kind. "time": the source is audio/timed (recorder,
+   * VTT, STT) and the citation is checked against its timestamp.
+   * "line": the source is authored/pasted text with no time domain
+   * (manual notes) and the citation is checked against its source line
+   * (lineIndex + rawText) — it must never display a fabricated "00:00".
+   */
+  anchorKind?: "time" | "line";
   rawText: string;
   lineIndex?: number;
   isEdited?: boolean;

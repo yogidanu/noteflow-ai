@@ -114,7 +114,7 @@ export const config = {
   // STT Ingress Provider (Deepgram / Whisper)
   stt: {
     apiKey: process.env.DEEPGRAM_API_KEY || "sample-deepgram-api-key",
-    model: "nova-2",
+    model: "nova-3",
     diarizationEnabled: true,
   },
 
