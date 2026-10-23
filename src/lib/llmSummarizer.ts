@@ -27,9 +27,18 @@ export class GenerativeSummarizer {
     sanitized: SanitizedResult,
     refinement: RefinementPromptType = "standard"
   ): AIAnalysisResult {
-    const rawLines = sanitized.lines
-      .map((l) => l.text.trim())
-      .filter((t) => t.length > 5 && !t.toLowerCase().startsWith("recording session"));
+    // Keep text and its source line paired: filtering must never shift a
+    // line's index away from the sanitized line it came from, or citations
+    // bind to the wrong speaker/timestamp.
+    const kept = sanitized.lines
+      .map((source) => ({ source, text: source.text.trim() }))
+      .filter(
+        (e) =>
+          e.text.length > 5 &&
+          !e.text.toLowerCase().startsWith("recording session")
+      );
+    const rawLines = kept.map((e) => e.text);
+    const rawSources = kept.map((e) => e.source);
 
     const speakers = sanitized.speakers.length > 0 ? sanitized.speakers : ["Team"];
     const wordCount = sanitized.cleanText.split(/\s+/).filter(Boolean).length;
@@ -39,16 +48,25 @@ export class GenerativeSummarizer {
     const executiveSummary = this.buildExecutiveSummary(rawLines, speakers, refinement);
 
     // 2. Synthesize Professional Key Decisions
-    const decisions = this.buildKeyDecisions(sanitized, rawLines, refinement);
+    const decisions = this.buildKeyDecisions(rawSources, rawLines, refinement);
 
     // 3. Synthesize Action Items & Deliverables
-    const actionItems = this.buildActionItems(sanitized, rawLines, speakers, refinement);
+    const actionItems = this.buildActionItems(rawSources, rawLines, speakers, refinement);
 
     // 4. Synthesize Parking Lot & Unresolved Questions
-    const unresolvedQuestions = this.buildParkingLotQuestions(sanitized, rawLines);
+    const unresolvedQuestions = this.buildParkingLotQuestions(rawSources, rawLines);
 
     // 5. Synthesize Key Discussion Points
-    const importantDiscussionPoints = this.buildDiscussionTopics(sanitized, rawLines);
+    const importantDiscussionPoints = this.buildDiscussionTopics(rawSources, rawLines);
+
+    // 6. Grounding is measured, not asserted: confidence reflects the share
+    // of emitted citations that carry a real (non-fallback) timestamp.
+    const modelConfidence = this.computeGroundingConfidence([
+      ...decisions,
+      ...actionItems,
+      ...unresolvedQuestions,
+      ...importantDiscussionPoints,
+    ]);
 
     return {
       executiveSummary,
@@ -59,9 +77,85 @@ export class GenerativeSummarizer {
       detectedSpeakers: speakers,
       wordCount,
       estimatedMeetingDurationMinutes: durationMinutes,
-      modelConfidence: "high",
+      modelConfidence,
       appliedRefinement: refinement !== "standard" ? refinement : undefined,
     };
+  }
+
+  /**
+   * Share of citations carrying a real timestamp, mapped to a confidence
+   * level. A citation with no timestamp (or the legacy "00:00" fallback)
+   * is ungrounded: the reader cannot fact-check it, so it must not be
+   * presented as high confidence. No citations at all is "low" — there is
+   * nothing verifiable in the output.
+   */
+  public static computeGroundingConfidence(
+    cited: Array<{ citation?: { timestamp?: string } }>
+  ): "high" | "moderate" | "low" {
+    if (cited.length === 0) return "low";
+    const grounded = cited.filter(
+      (c) => c.citation?.timestamp && c.citation.timestamp !== "00:00"
+    ).length;
+    const share = grounded / cited.length;
+    if (share >= 0.9) return "high";
+    if (share >= 0.5) return "moderate";
+    return "low";
+  }
+
+  /**
+   * Coarse line classification used to keep extraction honest: a line that
+   * is a decision, a rationale, an open question, or meeting context must
+   * not also be harvested as an action item.
+   */
+  private static classifyLine(text: string): "decision" | "question" | "rationale" | "context" | "other" {
+    const lower = text.toLowerCase().trim();
+    if (
+      text.includes("?") ||
+      /\b(open question|question we|leaving open|left open|parking lot)\b/.test(lower) ||
+      /^(how|what|why|when|where|who|should|can we|could we)\b/.test(lower) ||
+      /\bwhether\b/.test(lower)
+    ) {
+      return "question";
+    }
+    if (
+      /\b(decided|decision|agreed|agreement|confirmed|go with|plan is|selected|standardize|standardise|launch date|target date)\b/.test(lower)
+    ) {
+      return "decision";
+    }
+    if (/^(the reason|reason:|because|since)\b/.test(lower) || /\breason is\b/.test(lower)) {
+      return "rationale";
+    }
+    if (
+      /^(this is a|this is the|welcome|today we|in this meeting|planning check[-\s]?in)\b/.test(lower)
+    ) {
+      return "context";
+    }
+    return "other";
+  }
+
+  /**
+   * Commitment-based action detection. An action item requires an actual
+   * commitment, not a keyword substring: "check" inside "check-in" and
+   * "share" inside "shared workspace" must never create tasks.
+   * Recognised shapes:
+   *  - first/third-person future commitment: "I will …", "we'll …",
+   *    "Yogendra will …"
+   *  - a direct request: "Carlos, can you …", "please send …"
+   *  - an imperative at the start of the line: "Send the deck …"
+   */
+  private static hasActionCommitment(text: string): boolean {
+    const t = text.trim();
+    if (/\b(i|we|you|he|she|they)\s+will\b/i.test(t)) return true;
+    if (/\b(i'll|we'll|you'll|i\s+shall)\b/i.test(t)) return true;
+    if (/^[A-Z][a-z]+(?:\s[A-Z][a-z]+)?\s+will\b/.test(t)) return true;
+    if (/^(?:[A-Z][A-Za-z\s]{0,30},\s*)?(can you|could you|will you|please)\b/i.test(t)) return true;
+    if (
+      /^(please\s+)?(send|share|prepare|create|update|review|schedule|assign|fix|test|draft|write|set up|follow up|check)\b/i.test(t) &&
+      !t.includes("?")
+    ) {
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -85,71 +179,79 @@ export class GenerativeSummarizer {
       return `Meeting Briefing (${speakerLabel}):\n${coreIdeas.slice(0, 2).map((c) => `• ${this.toProfessionalSentence(c)}`).join("\n")}`;
     }
 
+    // Every lens is composed ONLY from cleaned, grounded transcript
+    // content. No canned openers, outcomes, or impact statements: a
+    // sentence that could describe any meeting describes none of them,
+    // and presenting template text as a summary of this meeting is
+    // exactly the artificial filler NoteFlow promises not to produce.
     if (refinement === "executive") {
       return `Strategic Executive Summary:\n\n` +
-        `• Objective & Scope: ${speakerLabel} convened to evaluate project milestones, align on tactical priorities, and confirm team deliverables.\n` +
-        `• Core Discussion Takeaways:\n` +
-        primaryTopics.map((p) => `  - ${p}`).join("\n") + `\n` +
-        `• Business Impact: Consensus reached on near-term roadmap and operational ownership.`;
+        `• Core Discussion Takeaways (${speakerLabel}):\n` +
+        primaryTopics.map((p) => `  - ${p}`).join("\n");
     }
 
     if (refinement === "action_focused") {
       return `Action-Oriented Summary:\n\n` +
-        `Primary focus centered on immediate milestones and resource allocation for ${speakerLabel}.\n\n` +
         `Key Deliverable Streams:\n` +
         primaryTopics.map((p) => `• ${p}`).join("\n");
     }
 
     if (refinement === "technical") {
       return `Technical Architecture & Scope Summary:\n\n` +
-        `Technical stakeholders (${speakerLabel}) reviewed system requirements, operational constraints, and implementation dependencies.\n\n` +
         `Key Architectural Takeaways:\n` +
         primaryTopics.map((p) => `• ${p}`).join("\n");
     }
 
-    // Standard Professional Format
+    // Standard Professional Format — grounded highlights only.
     return `Executive Overview:\n` +
-      `The session convened between ${speakerLabel} to review operational milestones, resolve key considerations, and establish execution plans for upcoming deliverables.\n\n` +
       `Key Highlights & Strategic Focus:\n` +
       (primaryTopics.length > 0
         ? primaryTopics.map((p) => `• ${p}`).join("\n")
-        : `• Operational alignment established for project execution.\n• Deliverables and next steps assigned to team owners.`) +
-      `\n\nOutcome:\nThe participants established clear operational direction, delegated immediate responsibilities, and planned subsequent checkpoint milestones.`;
+        : `• No substantive discussion points were captured in this transcript.`);
   }
 
   /**
    * Transforms conversational agreements into definitive, executive decisions.
    */
   private static buildKeyDecisions(
-    sanitized: SanitizedResult,
+    sources: SanitizedResult["lines"],
     lines: string[],
     refinement: RefinementPromptType
   ): DecisionItem[] {
     const decisions: DecisionItem[] = [];
 
     lines.forEach((line, idx) => {
-      const lower = line.toLowerCase();
+      // Word-boundary matching only — substring hits inside unrelated
+      // words must not manufacture decisions.
       const isDecision =
-        lower.includes("decided") ||
-        lower.includes("agree") ||
-        lower.includes("go with") ||
-        lower.includes("use ") ||
-        lower.includes("confirmed") ||
-        lower.includes("plan is") ||
-        lower.includes("selected") ||
-        lower.includes("target date") ||
-        lower.includes("launch") ||
-        lower.includes("standardize");
+        this.classifyLine(line) === "decision" ||
+        /\b(go with|plan is|launch date|target date)\b/i.test(line);
 
       if (isDecision && decisions.length < 5) {
         const clean = this.cleanDialogue(line);
         const polishedDecision = this.toProfessionalDecision(clean);
-        const sourceLine = sanitized.lines[idx] || sanitized.lines[0];
+        const sourceLine = sources[idx] || sources[0];
+
+        // Rationale is included only when a rationale was actually spoken
+        // (in this line after a because/since clause, or in an adjacent
+        // rationale line). Never substitute a canned approval sentence.
+        let rationale: string | undefined;
+        const becauseMatch = clean.match(/(?:because|since)\s+(.+)/i);
+        if (becauseMatch) {
+          rationale = this.toProfessionalSentence(becauseMatch[1].trim());
+        } else {
+          const rationaleLine = [lines[idx + 1], lines[idx - 1]].find(
+            (l) => l && this.classifyLine(l) === "rationale"
+          );
+          if (rationaleLine) {
+            rationale = this.toProfessionalSentence(this.cleanDialogue(rationaleLine));
+          }
+        }
 
         decisions.push({
           id: `dec-${Math.random().toString(36).substr(2, 9)}`,
           text: polishedDecision,
-          rationale: "Approved by participants during alignment session.",
+          rationale,
           confidence: "high",
           citation: {
             id: `cit-dec-${idx}`,
@@ -162,25 +264,9 @@ export class GenerativeSummarizer {
       }
     });
 
-    // If no explicit decision keyword, synthesize the primary takeaway into a clear decision
-    if (decisions.length === 0 && lines.length > 0) {
-      const topIdea = lines[0];
-      const sourceLine = sanitized.lines[0];
-      decisions.push({
-        id: `dec-${Math.random().toString(36).substr(2, 9)}`,
-        text: `Adopted working strategy: ${this.toProfessionalSentence(this.cleanDialogue(topIdea))}`,
-        rationale: "Established as working agreement during session.",
-        confidence: "high",
-        citation: {
-          id: `cit-dec-0`,
-          speaker: sourceLine?.speaker || "Speaker",
-          timestamp: sourceLine?.timestamp || "00:00",
-          rawText: topIdea,
-          lineIndex: sourceLine?.originalIndex ?? 0,
-        },
-      });
-    }
-
+    // No explicit decision in the transcript means the decision log stays
+    // empty. Inventing an "adopted working strategy" from the first line
+    // is precisely the artificial filler this product promises not to add.
     return decisions.slice(0, refinement === "shorter" ? 2 : 4);
   }
 
@@ -188,7 +274,7 @@ export class GenerativeSummarizer {
    * Transforms raw spoken promises into clear, actionable task items with owners and deadlines.
    */
   private static buildActionItems(
-    sanitized: SanitizedResult,
+    sources: SanitizedResult["lines"],
     lines: string[],
     speakers: string[],
     refinement: RefinementPromptType
@@ -196,69 +282,42 @@ export class GenerativeSummarizer {
     const actions: ActionItem[] = [];
 
     lines.forEach((line, idx) => {
-      const lower = line.toLowerCase();
-      const isAction =
-        lower.includes("will") ||
-        lower.includes("i'll") ||
-        lower.includes("we'll") ||
-        lower.includes("need to") ||
-        lower.includes("please") ||
-        lower.includes("can you") ||
-        lower.includes("follow up") ||
-        lower.includes("send") ||
-        lower.includes("share") ||
-        lower.includes("check") ||
-        lower.includes("create") ||
-        lower.includes("prepare") ||
-        lower.includes("review") ||
-        lower.includes("update") ||
-        lower.includes("schedule");
+      // A line already classified as a decision, rationale, open question,
+      // or meeting context is never also an action item, even when it
+      // happens to contain a commitment-shaped phrase.
+      const kind = this.classifyLine(line);
+      if (kind !== "other") return;
+      if (!this.hasActionCommitment(line)) return;
+      if (actions.length >= 6) return;
 
-      if (isAction && actions.length < 6) {
-        const sourceLine = sanitized.lines[idx] || sanitized.lines[0];
-        const rawClean = this.cleanDialogue(line);
-        const taskTitle = this.toProfessionalActionTask(rawClean);
-        const assignee = sourceLine?.speaker || this.inferAssignee(line, speakers) || "Assigned Owner";
-        const dueDate = this.extractDueDate(line) || "Next Checkpoint";
+      const sourceLine = sources[idx] || sources[0];
+      const rawClean = this.cleanDialogue(line);
+      const taskTitle = this.toProfessionalActionTask(rawClean);
+      const assignee = sourceLine?.speaker || this.inferAssignee(line, speakers) || "Assigned Owner";
+      // Due date is optional and is only ever a date that was actually
+      // spoken. Fabricated defaults ("Next Checkpoint", "End of Week")
+      // put deadlines in people's calendars that nobody agreed to.
+      const dueDate = this.extractDueDate(line);
 
-        actions.push({
-          id: `act-${Math.random().toString(36).substr(2, 9)}`,
-          task: taskTitle,
-          assignee,
-          dueDate,
-          isCompleted: false,
-          priority: actions.length === 0 ? "high" : "medium",
-          citation: {
-            id: `cit-act-${idx}`,
-            speaker: sourceLine?.speaker || "Speaker",
-            timestamp: sourceLine?.timestamp || "00:00",
-            rawText: line,
-            lineIndex: sourceLine?.originalIndex ?? idx,
-          },
-        });
-      }
-    });
-
-    // Default action item if none were triggered
-    if (actions.length === 0 && lines.length > 0) {
-      const sourceLine = sanitized.lines[0];
       actions.push({
         id: `act-${Math.random().toString(36).substr(2, 9)}`,
-        task: `Review meeting synthesis and follow up on ${this.toProfessionalBullet(lines[0])}`,
-        assignee: speakers[0] || "Team",
-        dueDate: "End of Week",
+        task: taskTitle,
+        assignee,
+        dueDate,
         isCompleted: false,
-        priority: "high",
+        priority: actions.length === 0 ? "high" : "medium",
         citation: {
-          id: `cit-act-0`,
+          id: `cit-act-${idx}`,
           speaker: sourceLine?.speaker || "Speaker",
           timestamp: sourceLine?.timestamp || "00:00",
-          rawText: lines[0],
-          lineIndex: sourceLine?.originalIndex ?? 0,
+          rawText: line,
+          lineIndex: sourceLine?.originalIndex ?? idx,
         },
       });
-    }
+    });
 
+    // No commitments spoken means no action items. There is deliberately
+    // no default/fallback task.
     return actions.slice(0, refinement === "shorter" ? 3 : 5);
   }
 
@@ -266,7 +325,7 @@ export class GenerativeSummarizer {
    * Captures open strategic inquiries, dependencies, and parking lot topics.
    */
   private static buildParkingLotQuestions(
-    sanitized: SanitizedResult,
+    sources: SanitizedResult["lines"],
     lines: string[]
   ): UnresolvedQuestion[] {
     const questions: UnresolvedQuestion[] = [];
@@ -274,23 +333,11 @@ export class GenerativeSummarizer {
     lines.forEach((line, idx) => {
       const lower = line.toLowerCase();
       const isQuestion =
-        line.includes("?") ||
-        lower.startsWith("how ") ||
-        lower.startsWith("what ") ||
-        lower.startsWith("why ") ||
-        lower.startsWith("when ") ||
-        lower.startsWith("where ") ||
-        lower.startsWith("who ") ||
-        lower.startsWith("can we ") ||
-        lower.startsWith("should we ") ||
-        lower.includes("not sure") ||
-        lower.includes("need to check") ||
-        lower.includes("depends on") ||
-        lower.includes("open question") ||
-        lower.includes("parking lot");
+        this.classifyLine(line) === "question" ||
+        /\b(not sure|depends on|open question|parking lot)\b/.test(lower);
 
       if (isQuestion && questions.length < 4) {
-        const sourceLine = sanitized.lines[idx] || sanitized.lines[0];
+        const sourceLine = sources[idx] || sources[0];
         const cleanQ = this.toProfessionalQuestion(this.cleanDialogue(line));
 
         questions.push({
@@ -308,33 +355,18 @@ export class GenerativeSummarizer {
       }
     });
 
-    // Provide a relevant parking lot topic if no explicit questions were asked
-    if (questions.length === 0 && lines.length > 1) {
-      const lastLine = lines[lines.length - 1];
-      const sourceLine = sanitized.lines[sanitized.lines.length - 1];
-      questions.push({
-        id: `q-${Math.random().toString(36).substr(2, 9)}`,
-        question: `Confirm final requirements and milestone scope for: "${this.toProfessionalSentence(this.cleanDialogue(lastLine))}"`,
-        suggestedFollowUp: "Schedule a brief follow-up to resolve open dependency.",
-        citation: {
-          id: `cit-q-0`,
-          speaker: sourceLine?.speaker || "Speaker",
-          timestamp: sourceLine?.timestamp || "00:00",
-          rawText: lastLine,
-          lineIndex: sourceLine?.originalIndex ?? 0,
-        },
-      });
-    }
-
+    // No question was asked or left open means the parking lot stays
+    // empty. Converting the last line into a "confirm the requirements"
+    // question invents an unresolved item nobody raised.
     return questions.slice(0, 3);
   }
 
   /**
    * Formats thematic discussion topics.
    */
-  private static buildDiscussionTopics(sanitized: SanitizedResult, lines: string[]) {
+  private static buildDiscussionTopics(sources: SanitizedResult["lines"], lines: string[]) {
     return lines.slice(0, 4).map((line, idx) => {
-      const sourceLine = sanitized.lines[idx] || sanitized.lines[0];
+      const sourceLine = sources[idx] || sources[0];
       const clean = this.cleanDialogue(line);
       return {
         id: `disc-${Math.random().toString(36).substr(2, 9)}`,
@@ -356,7 +388,12 @@ export class GenerativeSummarizer {
 
   private static cleanDialogue(text: string): string {
     return text
-      .replace(/^(<v[^>]*>|\[[\d:]+\]|(?:Speaker\s+\d+|[A-Z][a-zA-Z0-9_\s]+):)/g, "")
+      // Strip speaker prefixes in every supported serialization, including
+      // the recorder format "You [00:21]: …" and "[00:21] You: …".
+      .replace(
+        /^(<v[^>]*>|[A-Za-z][A-Za-z0-9_\s.'-]{0,39}?\s*\[\d{1,2}:\d{2}(?::\d{2})?\]:\s*|\[\d{1,2}:\d{2}(?::\d{2})?\]\s*(?:[A-Za-z][A-Za-z0-9_\s.'-]{0,39}?:\s*)?|(?:Speaker\s+\d+|[A-Z][a-zA-Z0-9_\s]+):\s*)/g,
+        ""
+      )
       .replace(/\b(um|uh|like|you know|so yeah|basically|actually)\b/gi, "")
       .replace(/\s+/g, " ")
       .trim();
@@ -376,7 +413,7 @@ export class GenerativeSummarizer {
 
   private static toProfessionalDecision(text: string): string {
     const clean = text
-      .replace(/^(we decided to|we agreed to|i decided|we should|let's)\s*/i, "")
+      .replace(/^(we have decided to|we decided to|we agreed to|we have agreed to|i decided|we should|let's)\s*/i, "")
       .trim();
     if (!clean) return "Confirmed direction for milestone deliverables.";
     return `Agreed to ${clean.charAt(0).toLowerCase() + clean.slice(1)}`;

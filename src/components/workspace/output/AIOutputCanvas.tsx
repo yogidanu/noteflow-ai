@@ -30,6 +30,34 @@ export const AIOutputCanvas: React.FC<AIOutputCanvasProps> = ({
   onToggleSourceDrawer,
   isSourceDrawerOpen = false,
 }) => {
+  // Grounding labels are derived from the actual analysis, never static:
+  // the share of emitted citations carrying a real (non-"00:00") timestamp
+  // decides what the header may claim, and the summarizer's computed
+  // modelConfidence decides the accuracy wording in the footer.
+  const allCitations = [
+    ...analysis.decisions.map((d) => d.citation),
+    ...analysis.actionItems.map((a) => a.citation),
+    ...analysis.unresolvedQuestions.map((q) => q.citation),
+    ...(analysis.importantDiscussionPoints || []).map((p) => p.citation),
+  ].filter(Boolean) as SourceCitation[];
+  const groundedCount = allCitations.filter(
+    (c) => c.timestamp && c.timestamp !== "00:00"
+  ).length;
+  const groundedShare =
+    allCitations.length > 0 ? groundedCount / allCitations.length : 0;
+  const groundingLabel =
+    allCitations.length === 0
+      ? "No citations available"
+      : groundedShare >= 1
+        ? "100% Grounded in Transcript"
+        : `${Math.round(groundedShare * 100)}% Grounded in Transcript`;
+  const accuracyLabel =
+    analysis.modelConfidence === "high"
+      ? "Extracted with Source Grounding • High Accuracy"
+      : analysis.modelConfidence === "moderate"
+        ? "Extracted with Source Grounding • Moderate Accuracy — Check Citations"
+        : "Extracted with Source Grounding • Low Accuracy — Verify Against Transcript";
+
   return (
     <div className="space-y-6 animate-fadeIn">
       {/* ───────────────────────────────────────────────────────────── */}
@@ -55,7 +83,7 @@ export const AIOutputCanvas: React.FC<AIOutputCanvasProps> = ({
               AI-Generated Insights & Synthesis
             </h2>
           </div>
-          <span className="text-[11px] text-[var(--text-subtle)] font-mono">100% Grounded in Transcript</span>
+          <span className="text-[11px] text-[var(--text-subtle)] font-mono">{groundingLabel}</span>
         </div>
 
         {/* Refinement Persona Selector Chips */}
@@ -103,7 +131,7 @@ export const AIOutputCanvas: React.FC<AIOutputCanvasProps> = ({
         <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-2xl bg-[var(--surface-card)] border border-[var(--border-default)] text-xs shadow-2xs transition-colors duration-150">
           <div className="flex items-center gap-2 text-[var(--color-success)] font-medium font-mono text-[11px]">
             <ShieldCheck className="w-4 h-4 text-[var(--color-success)] shrink-0" />
-            <span>Extracted with Source Grounding • High Accuracy</span>
+            <span>{accuracyLabel}</span>
           </div>
 
           <button
