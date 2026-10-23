@@ -72,6 +72,17 @@ function hasActionCommitment(text: string): boolean {
   const t = text.trim();
   if (/\b(i|we|you|he|she|they)\s+will\b/i.test(t)) return true;
   if (/\b(i'll|we'll|you'll|i\s+shall)\b/i.test(t)) return true;
+  // Appositive subject: "I, Yogendra, will …" / comma-less STT
+  // "I Yogendra will …" — pronoun and auxiliary are separated by the
+  // speaker's name, so neither adjacency rule above can see the
+  // commitment. The intervening word(s) must be capitalized name
+  // words: a lowercase verb or adverb in that slot ("I really
+  // will …", "I think …") must never match.
+  if (
+    /\b(?:I|i|We|we|You|you|He|he|She|she|They|they),?\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?,?\s+(?:will|shall)\b/.test(t)
+  ) {
+    return true;
+  }
   // Obligation statements anchored to an action verb: "We need to fix …"
   // (the verb anchor keeps "we need to figure out whether …" — a
   // question — from spawning tasks).
@@ -152,6 +163,12 @@ function computeGroundingConfidence(
  *     subject appositive: "I, Yogendra, will assign …". The verb after
  *     will/shall is already base form, so dropping subject + auxiliary
  *     yields the imperative — no verb morphology is attempted.
+ *  1a. Pronoun + appositive name + will/shall, commas optional:
+ *     written "I, Yogendra, will assign …" and the comma-less STT
+ *     form "I Yogendra will assign …" (live transcripts rarely carry
+ *     the appositive commas). The name word(s) must be capitalized,
+ *     so a lowercase verb/adverb between pronoun and auxiliary
+ *     ("I really will …") is never mistaken for a name and dropped.
  *  2. Contractions: "I'll …", "We'll …", "You'll …".
  *  3. Obligation: "We need to fix …", "I have to send …".
  *  4. Requests: "Carlos, can you update …?", "Please send …".
@@ -186,6 +203,8 @@ function normalizeActionTaskText(text: string): string {
 
   // (1)–(4) Leading commitment framing — first match wins.
   const leadPatterns: RegExp[] = [
+    // (1a) pronoun + appositive name + will/shall, commas optional
+    /^(?:I|i|We|we|You|you|He|he|She|she|They|they),?\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?,?\s+(?:will|shall)\s+/,
     /^(?:[A-Z][a-z]+(?:\s[A-Z][a-z]+)?|I|we|you|he|she|they)(?:,\s*[^,]{1,40},)?\s+(?:will|shall)\s+/,
     /^(?:I'll|we'll|you'll|he'll|she'll|they'll)\s+/i,
     /^(?:I|we)\s+(?:need|have)\s+to\s+/i,
