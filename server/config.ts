@@ -61,6 +61,57 @@ const allowedRedirectUris = [
   "https://api.noteflow.ai/api/auth/google/callback",
 ];
 
+// --- Secret resolution -------------------------------------------------------
+// Dev-only fallback secrets. They exist so local development boots with zero
+// setup; they are public (printed here) and must NEVER protect real data.
+const DEV_TOKEN_ENCRYPTION_KEY =
+  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const DEV_SESSION_SECRET = "noteflow-meet-record-session-secret-key-2026";
+
+function resolveSecret(
+  name: "TOKEN_ENCRYPTION_KEY" | "SESSION_SECRET",
+  envValue: string | undefined,
+  devFallback: string,
+): string {
+  if (!isProduction) {
+    return envValue || devFallback;
+  }
+  // Production fails closed: refuse to boot without a real secret, and refuse
+  // the published dev fallbacks even if someone sets them explicitly.
+  if (!envValue) {
+    throw new Error(
+      `[Security Error] ${name} is not set. Production refuses to boot with the built-in dev fallback secret.`,
+    );
+  }
+  if (envValue === devFallback) {
+    throw new Error(
+      `[Security Error] ${name} is set to the built-in dev fallback value, which is public. Set a real secret.`,
+    );
+  }
+  if (name === "TOKEN_ENCRYPTION_KEY" && !/^[0-9a-fA-F]{64}$/.test(envValue)) {
+    throw new Error(
+      "[Security Error] TOKEN_ENCRYPTION_KEY must be 64 hex characters (32 bytes) in production.",
+    );
+  }
+  if (name === "SESSION_SECRET" && envValue.length < 32) {
+    throw new Error(
+      "[Security Error] SESSION_SECRET must be at least 32 characters in production.",
+    );
+  }
+  return envValue;
+}
+
+const tokenEncryptionKey = resolveSecret(
+  "TOKEN_ENCRYPTION_KEY",
+  process.env.TOKEN_ENCRYPTION_KEY,
+  DEV_TOKEN_ENCRYPTION_KEY,
+);
+const sessionSecret = resolveSecret(
+  "SESSION_SECRET",
+  process.env.SESSION_SECRET,
+  DEV_SESSION_SECRET,
+);
+
 export const config = {
   port: parseInt(process.env.PORT || "4000", 10),
   nodeEnv: process.env.NODE_ENV || "development",
@@ -70,13 +121,11 @@ export const config = {
   corsOrigin: rawCorsOrigin,
 
   // Master Secret Key for AES-256-GCM Token Encryption (32 bytes hex)
-  tokenEncryptionKey:
-    process.env.TOKEN_ENCRYPTION_KEY ||
-    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  // Resolved by resolveSecret above: production refuses missing/dev values.
+  tokenEncryptionKey,
 
   // Session Secret for HMAC signing
-  sessionSecret:
-    process.env.SESSION_SECRET || "noteflow-meet-record-session-secret-key-2026",
+  sessionSecret,
 
   // Google OAuth 2.0 Credentials
   google: {

@@ -223,8 +223,8 @@ PORT=4000
 CORS_ORIGIN=https://app.noteflow.ai,http://localhost:5173
 
 # Cryptography & Security (32-byte / 64-hex chars)
-TOKEN_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-SESSION_SECRET=noteflow-production-session-secret-key-2026
+TOKEN_ENCRYPTION_KEY=generate-with-openssl-rand-hex-32
+SESSION_SECRET=generate-a-long-random-string
 
 # Persistence
 DATABASE_URL=postgresql://noteflow_user:password@db.noteflow.internal:5432/noteflow_prod?sslmode=require
