@@ -4,6 +4,8 @@
  * Concurrently runs browser-native Web Speech Recognition for instant, zero-cost real-time live transcription.
  */
 
+import { mergeTranscriptSegments } from "./transcriptMerge";
+
 export interface DiarizedSpeechSegment {
   speaker: string;
   timestamp: string; // e.g. "00:15"
@@ -175,9 +177,7 @@ export class WebAudioRecorder {
             }
 
             this.currentUtterance = latestInterim.trim();
-            this.fullTranscriptText = this.recognizedSegments
-              .map((s) => `${s.speaker} [${s.timestamp}]: ${s.text}`)
-              .join("\n");
+            this.fullTranscriptText = this.composeTranscriptText();
 
             if (this.currentUtterance) {
               const liveView = this.fullTranscriptText
@@ -207,9 +207,7 @@ export class WebAudioRecorder {
                 text: this.currentUtterance,
               });
               this.currentUtterance = "";
-              this.fullTranscriptText = this.recognizedSegments
-                .map((s) => `${s.speaker} [${s.timestamp}]: ${s.text}`)
-                .join("\n");
+              this.fullTranscriptText = this.composeTranscriptText();
             }
 
             // Auto-restart recognition seamlessly if still recording
@@ -299,9 +297,7 @@ export class WebAudioRecorder {
         text: this.currentUtterance.trim(),
       });
       this.currentUtterance = "";
-      this.fullTranscriptText = this.recognizedSegments
-        .map((s) => `${s.speaker} [${s.timestamp}]: ${s.text}`)
-        .join("\n");
+      this.fullTranscriptText = this.composeTranscriptText();
     }
 
     if (this.recognition) {
@@ -328,7 +324,7 @@ export class WebAudioRecorder {
         resolve({
           audioBlob: blob,
           transcriptText,
-          segments: this.recognizedSegments,
+          segments: mergeTranscriptSegments(this.recognizedSegments),
         });
       };
 
@@ -352,6 +348,16 @@ export class WebAudioRecorder {
         compileResult(null);
       }
     });
+  }
+
+  /**
+   * Builds the transcript text from recognized segments, gluing pause-split
+   * fragments back into whole sentences (see transcriptMerge).
+   */
+  private composeTranscriptText(): string {
+    return mergeTranscriptSegments(this.recognizedSegments)
+      .map((s) => `${s.speaker} [${s.timestamp}]: ${s.text}`)
+      .join("\n");
   }
 
   /**
