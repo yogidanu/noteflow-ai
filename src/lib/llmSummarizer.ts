@@ -421,7 +421,18 @@ export class GenerativeSummarizer {
 
   /** Words that mark a decision as overturning an earlier one (Fix 4). */
   private static readonly REVERSER_MARKERS =
-    /\b(postpone|postponed|delay|delayed|defer|deferred|cancel|cancelled|cancels|drop|dropped|remove|removed|scrap|abandon|revert|roll\s?back|pause|paused|hold off|no longer|instead)\b/i;
+    /\b(postpone|postponed|delay|delayed|defer|deferred|cancel|cancelled|cancels|drop|dropped|remove|removed|scrap|abandon|revert|roll\s?back|pause|paused|hold off|no longer|instead|moved?|reschedul\w*|push(?:ed|ing)?\s+(?:back|to)|shift(?:ed)?\s+to)\b/i;
+
+  /**
+   * A spoken negation of an earlier decision ("We are not launching on
+   * Friday.") — natural speech usually states the reversal as its own
+   * sentence BEFORE the replacement decision, so the marker rarely sits
+   * inside the later decision line itself (live-recording find,
+   * 2026-10-26). Such a line supersedes an earlier decision whose
+   * stemmed content words overlap it by at least 2.
+   */
+  private static readonly DECISION_NEGATION =
+    /\b(we(?:'re| are) not|i(?:'m| am) not|not going to|won't be|no longer)\b/i;
 
   /** Function/decision-framing words excluded from topic overlap (Fix 4). */
   private static readonly DECISION_STOPWORDS = new Set([
@@ -440,6 +451,11 @@ export class GenerativeSummarizer {
         .replace(/[^a-z0-9.\s]/g, " ")
         .split(/\s+/)
         .filter((w) => w.length >= 2 && !this.DECISION_STOPWORDS.has(w))
+        // Light stemming so "launching"/"launched" match "launch" —
+        // a negation line ("not launching on Friday") must be able to
+        // find the decision it cancels ("launch the beta on Friday").
+        .map((w) => (w.length > 4 ? w.replace(/(ing|ed|es|s)$/, "") : w))
+        .filter((w) => w.length >= 2)
     );
   }
 
@@ -455,21 +471,36 @@ export class GenerativeSummarizer {
    * normal standing decision. Superseded decisions are removed: the
    * log reflects what the meeting finally decided.
    */
-  private static removeSupersededDecisions<T extends { sourceText: string }>(
-    collected: T[]
-  ): T[] {
+  private static removeSupersededDecisions<
+    T extends { sourceText: string; sourceIndex: number }
+  >(collected: T[], allLines: string[]): T[] {
     const removed = new Set<number>();
     const wordSets = collected.map((c) => this.decisionContentWords(c.sourceText));
+    const overlapOf = (a: Set<string>, b: Set<string>) => {
+      let n = 0;
+      a.forEach((w) => {
+        if (b.has(w)) n++;
+      });
+      return n;
+    };
+    // (a) A later decision carrying a reversal marker supersedes an
+    // earlier decision on the same topic.
     collected.forEach((entry, j) => {
       if (!this.REVERSER_MARKERS.test(entry.sourceText)) return;
       for (let i = 0; i < j; i++) {
         if (removed.has(i)) continue;
-        let overlap = 0;
-        wordSets[i].forEach((w) => {
-          if (wordSets[j].has(w)) overlap++;
-        });
-        if (overlap >= 2) removed.add(i);
+        if (overlapOf(wordSets[i], wordSets[j]) >= 2) removed.add(i);
       }
+    });
+    // (b) A spoken negation line supersedes an earlier decision on the
+    // same topic, whether or not a replacement decision follows.
+    allLines.forEach((line, lineIdx) => {
+      if (!this.DECISION_NEGATION.test(line)) return;
+      const negWords = this.decisionContentWords(line);
+      collected.forEach((entry, i) => {
+        if (removed.has(i) || entry.sourceIndex >= lineIdx) return;
+        if (overlapOf(wordSets[i], negWords) >= 2) removed.add(i);
+      });
     });
     return collected.filter((_, i) => !removed.has(i));
   }
@@ -479,7 +510,11 @@ export class GenerativeSummarizer {
     lines: string[],
     refinement: RefinementPromptType
   ): DecisionItem[] {
-    const collected: Array<{ item: DecisionItem; sourceText: string }> = [];
+    const collected: Array<{
+      item: DecisionItem;
+      sourceText: string;
+      sourceIndex: number;
+    }> = [];
 
     lines.forEach((line, idx) => {
       // Word-boundary matching only — substring hits inside unrelated
@@ -522,13 +557,14 @@ export class GenerativeSummarizer {
             citation: this.buildCitation(`cit-dec-${idx}`, sourceLine, line, idx),
           },
           sourceText: line,
+          sourceIndex: idx,
         });
       }
     });
 
     // Fix 4: drop decisions a later decision reversed, so the log
     // reflects the meeting's final state.
-    const decisions = this.removeSupersededDecisions(collected).map(
+    const decisions = this.removeSupersededDecisions(collected, lines).map(
       (c) => c.item
     );
 
@@ -669,7 +705,25 @@ export class GenerativeSummarizer {
       if (nextIdx >= lines.length) return true;
       const thisSpeaker = sources[idx]?.speaker;
       const nextSpeaker = sources[nextIdx]?.speaker;
-      if (!thisSpeaker || !nextSpeaker || nextSpeaker === thisSpeaker) {
+      if (!thisSpeaker || !nextSpeaker) {
+        return true;
+      }
+      if (nextSpeaker === thisSpeaker) {
+        // Same-speaker continuation normally keeps the question live —
+        // EXCEPT when the speaker answers it themselves in the next
+        // breath with an explicit affirmation ("Did everyone get the
+        // invite?" / "Yes, we all got it." — live-recording find,
+        // 2026-10-26). An affirmation opener is an answer shape, not
+        // elaboration.
+        const nextLine = lines[nextIdx].trim();
+        const AFFIRMATION_OPENER =
+          /^(yes|yeah|yep|no|nope|correct|exactly|right|done|all good)\b/i;
+        if (
+          AFFIRMATION_OPENER.test(nextLine) &&
+          this.classifyLine(nextLine) !== "question"
+        ) {
+          return false;
+        }
         return true;
       }
       if (lines[nextIdx].trim().length <= 15) return true;
@@ -1215,6 +1269,27 @@ export class GenerativeSummarizer {
     if (directAddress) {
       const resolved = this.resolveRosterName(directAddress[1], speakers);
       if (resolved) return resolved;
+    }
+    // Delegated commitment: "I will ask Meera to review…", "Get Carlos
+    // to send…", "I have assigned Priya to…" — the person asked owns the
+    // task, not the speaker. (Live-recording find, 2026-10-26: this
+    // pattern had no handler at all, so delegated tasks landed on the
+    // speaker even though the named-owner fix covered leading subjects.)
+    const delegated = t.match(
+      /\b(?:ask|asked|asking|get|getting|have|assign|assigned|delegate|delegated|tell|told)\s+([A-Za-z][a-z]+(?:\s[A-Z][a-z]+)?)\s+to\b/
+    );
+    if (delegated) {
+      const first = delegated[1].split(" ")[0].toLowerCase();
+      const PRONOUN_OR_GROUP = new Set([
+        "me", "you", "him", "her", "us", "them", "it", "the", "team",
+        "everyone", "someone", "anyone", "all",
+      ]);
+      if (!PRONOUN_OR_GROUP.has(first)) {
+        const captured =
+          delegated[1].charAt(0).toUpperCase() + delegated[1].slice(1);
+        const resolved = this.resolveRosterName(captured, speakers);
+        if (resolved) return resolved;
+      }
     }
     return undefined;
   }

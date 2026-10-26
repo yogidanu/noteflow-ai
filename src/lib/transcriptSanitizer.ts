@@ -107,6 +107,44 @@ export function applyDomainCorrections(text: string): string {
   return out;
 }
 
+/**
+ * Split a transcript line's text into individual sentences.
+ *
+ * Recognizers often return several sentences as one blob line ("...notes by
+ * Thursday. Arjun, please fix..."). The synthesis engine treats each line as
+ * one candidate unit, so blob lines collapse multiple tasks/decisions into a
+ * single mangled item. Splitting here keeps one sentence per line (same
+ * speaker + timestamp), which is the granularity the extractor — and the
+ * citation view — are built for. Unpunctuated text is returned unchanged.
+ */
+const ABBREVIATIONS = ["Mr.", "Mrs.", "Ms.", "Dr.", "e.g.", "i.e.", "vs.", "U.S.", "U.K."];
+
+export function splitSentences(text: string): string[] {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return [];
+  let guarded = trimmed;
+  const placeholders = new Map<string, string>();
+  ABBREVIATIONS.forEach((abbr, i) => {
+    const ph = `\u0001${i}\u0002`;
+    if (guarded.includes(abbr)) {
+      placeholders.set(ph, abbr);
+      guarded = guarded.split(abbr).join(ph);
+    }
+  });
+  const parts = guarded
+    .split(/(?<=[.!?…])\s+(?=[A-Z0-9"“‘'(])/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => {
+      let out = p;
+      placeholders.forEach((abbr, ph) => {
+        out = out.split(ph).join(abbr);
+      });
+      return out;
+    });
+  return parts.length > 0 ? parts : [trimmed];
+}
+
 export function sanitizeTranscript(raw: string): SanitizedResult {
   if (!raw || typeof raw !== "string") {
     return {
@@ -220,16 +258,22 @@ export function sanitizeTranscript(raw: string): SanitizedResult {
     }
 
     if (lineText) {
-      parsedLines.push({
-        speaker: currentSpeaker,
-        // A line-anchored (authored-text) line must not inherit or invent
-        // a timestamp: its citation anchor is the line itself. Timed lines
-        // keep the timestamp parsed from the source.
-        timestamp: lineAnchorKind === "time" ? currentTimestamp : undefined,
-        text: lineText,
-        originalIndex: i,
-        anchorKind: lineAnchorKind
-      });
+      // One sentence per line: multi-sentence blob lines would otherwise
+      // collapse several tasks/decisions/questions into a single item.
+      // Split pieces keep the line's speaker, timestamp and anchor kind, so
+      // citations still resolve to the same source moment.
+      for (const sentence of splitSentences(lineText)) {
+        parsedLines.push({
+          speaker: currentSpeaker,
+          // A line-anchored (authored-text) line must not inherit or invent
+          // a timestamp: its citation anchor is the line itself. Timed lines
+          // keep the timestamp parsed from the source.
+          timestamp: lineAnchorKind === "time" ? currentTimestamp : undefined,
+          text: sentence,
+          originalIndex: i,
+          anchorKind: lineAnchorKind
+        });
+      }
     }
   }
 

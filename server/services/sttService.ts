@@ -96,6 +96,7 @@ export function mergeUtterances(utterances: RawUtterance[], maxGapSeconds = 3): 
       prev &&
       prev.speaker === utt.speaker &&
       utt.start - prev.end <= maxGapSeconds &&
+      prev.text.split(/\s+/).filter(Boolean).length < 55 &&
       !TERMINAL_PUNCTUATION.test(prev.text)
     ) {
       prev.text = `${prev.text} ${text}`.replace(/\s+/g, " ").trim();
