@@ -281,7 +281,11 @@ export class GenerativeSummarizer {
       return "question";
     }
     if (
-      /\b(decided|decision|agreed|agreement|confirmed|go with|plan is|selected|standardize|standardise|launch date|target date)\b/.test(lower)
+      /\b(decided|decision|agreed|agreement|confirmed|go with|plan is|selected|standardize|standardise|launch date|target date)\b/.test(lower) &&
+      // A NEGATED status is not a decision: "Not confirmed yet." must
+      // never enter the Decision Log (wider test set W8, 2026-10-26).
+      !/\b(not|never|no)\s+(confirmed|decided|agreed|approved|finalized|finalised)\b/.test(lower) &&
+      !/\bhaven't\s+(confirmed|decided|agreed)\b/.test(lower)
     ) {
       return "decision";
     }
@@ -337,6 +341,16 @@ export class GenerativeSummarizer {
     if (/^(?:[A-Z][A-Za-z\s]{0,30},\s*)?(can you|could you|will you|please)\b/i.test(t)) return true;
     if (
       /^(please\s+)?(send|share|prepare|create|update|review|schedule|assign|fix|test|draft|write|set up|follow up|check)\b/i.test(t) &&
+      !t.includes("?")
+    ) {
+      return true;
+    }
+    // Bare imperative delegation: "Get Fatima to confirm…", "Ask Daniel
+    // to review…" — a direct instruction to route work to a named
+    // person is a commitment even without "will/please" (wider test
+    // set W10, 2026-10-26: this shape produced no task at all).
+    if (
+      /^(please\s+)?(get|have|ask|tell)\s+[A-Z][a-z]+(?:\s[A-Z][a-z]+)?\s+to\s+(send|share|prepare|create|update|review|schedule|assign|fix|test|draft|write|build|ship|resolve|finish|complete|confirm|check|book|arrange|set up|follow up)\b/i.test(t) &&
       !t.includes("?")
     ) {
       return true;
@@ -401,7 +415,7 @@ export class GenerativeSummarizer {
    */
   /** Past-time framing used by the historical-decision guard (Fix 5a). */
   private static readonly PAST_TIME_MARKERS =
-    /\b(last year|last quarter|last month|last week|previously|back then|years ago)\b/i;
+    /\b(last (year|quarter|month|week|sprint)|previously|back then|years ago)\b/i;
 
   /**
    * A decision REPORTED from the past is not a decision OF this meeting
@@ -675,10 +689,14 @@ export class GenerativeSummarizer {
 
     const candidates: Array<{ idx: number; parked: boolean }> = [];
     lines.forEach((line, idx) => {
-      const lower = line.toLowerCase();
       const isQuestion =
         this.classifyLine(line) === "question" ||
-        /\b(not sure|depends on|open question|parking lot)\b/.test(lower);
+        // Single source of truth: anything the parked-marker list can
+        // PARK must also be able to CREATE a candidate. The old gate
+        // regex was a shorter hand-maintained copy, so "need to figure
+        // out…" questions were silently never collected (wider test
+        // set W11, 2026-10-26).
+        PARKED_MARKERS.test(line);
       if (isQuestion) {
         candidates.push({ idx, parked: PARKED_MARKERS.test(line) });
       }
@@ -706,6 +724,14 @@ export class GenerativeSummarizer {
       const thisSpeaker = sources[idx]?.speaker;
       const nextSpeaker = sources[nextIdx]?.speaker;
       if (!thisSpeaker || !nextSpeaker) {
+        return true;
+      }
+      // A short NON-ANSWER ("Not confirmed yet.", "No idea.") is not an
+      // answer at all — the question stays open whoever speaks next
+      // (wider test set W8, 2026-10-26).
+      const NON_ANSWER =
+        /^\s*(not confirmed|not sure|no idea|don't know|do not know|haven't checked|have not checked|not yet|need to check|tbd)\b/i;
+      if (NON_ANSWER.test(lines[nextIdx])) {
         return true;
       }
       if (nextSpeaker === thisSpeaker) {
@@ -1276,7 +1302,7 @@ export class GenerativeSummarizer {
     // pattern had no handler at all, so delegated tasks landed on the
     // speaker even though the named-owner fix covered leading subjects.)
     const delegated = t.match(
-      /\b(?:ask|asked|asking|get|getting|have|assign|assigned|delegate|delegated|tell|told)\s+([A-Za-z][a-z]+(?:\s[A-Z][a-z]+)?)\s+to\b/
+      /\b(?:ask|asked|asking|get|getting|have|assign|assigned|delegate|delegated|tell|told)\s+([A-Za-z][a-z]+(?:\s[A-Z][a-z]+)?)\s+to\b/i
     );
     if (delegated) {
       const first = delegated[1].split(" ")[0].toLowerCase();

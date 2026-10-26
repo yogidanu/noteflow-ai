@@ -99,6 +99,14 @@ function hasActionCommitment(text: string): boolean {
   ) {
     return true;
   }
+  // Bare imperative delegation: "Get Fatima to confirm…" is a commitment
+  // even without "will/please" (mirrors the client summarizer).
+  if (
+    /^(please\s+)?(get|have|ask|tell)\s+[A-Z][a-z]+(?:\s[A-Z][a-z]+)?\s+to\s+(send|share|prepare|create|update|review|schedule|assign|fix|test|draft|write|build|ship|resolve|finish|complete|confirm|check|book|arrange|set up|follow up)\b/i.test(t) &&
+    !t.includes("?")
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -314,7 +322,7 @@ function normalizeQuestionText(text: string): string {
  * decided…") is a live decision and is never historical.
  */
 const PAST_TIME_MARKERS =
-  /\b(last year|last quarter|last month|last week|previously|back then|years ago)\b/i;
+  /\b(last (year|quarter|month|week|sprint)|previously|back then|years ago)\b/i;
 
 function isHistoricalDecision(text: string): boolean {
   const lower = text.toLowerCase();
@@ -597,7 +605,11 @@ export class SummaryService {
       );
       // Fix 5a: a decision framed in the past is history, not a
       // decision of this meeting.
-      const isLiveDecision = hasDecision && !isHistoricalDecision(seg.text);
+      // A negated status ("Not approved yet.") is not a decision either.
+      const isLiveDecision =
+        hasDecision &&
+        !isHistoricalDecision(seg.text) &&
+        !/\b(not|never|no)\s+(confirmed|decided|agreed|approved|finalized|finalised)\b/i.test(seg.text);
 
       if (isLiveDecision && decisions.length < 6) {
         let cleanText = seg.text
@@ -673,7 +685,7 @@ export class SummaryService {
           // Delegated commitment: "I will ask Meera to review…" — the
           // person asked owns the task (mirrors the client summarizer).
           const delegated = seg.text.match(
-            /\b(?:ask|asked|asking|get|getting|have|assign|assigned|delegate|delegated|tell|told)\s+([A-Za-z][a-z]+(?:\s[A-Z][a-z]+)?)\s+to\b/
+            /\b(?:ask|asked|asking|get|getting|have|assign|assigned|delegate|delegated|tell|told)\s+([A-Za-z][a-z]+(?:\s[A-Z][a-z]+)?)\s+to\b/i
           );
           if (delegated) {
             const first = delegated[1].split(" ")[0].toLowerCase();
@@ -737,7 +749,10 @@ export class SummaryService {
       const lower = seg.text.toLowerCase();
       const isQuestionOrPending =
         classifySegment(seg.text) === "question" ||
-        /\b(not sure|need to check|unresolved|open question|depends on)\b/.test(lower);
+        // Single source of truth (mirrors the client): anything the
+        // parked-marker list can park must also create a candidate.
+        PARKED_MARKERS.test(seg.text) ||
+        /\b(need to check)\b/.test(lower);
       if (isQuestionOrPending) {
         questionCandidates.push({ idx, parked: PARKED_MARKERS.test(seg.text) });
       }
@@ -755,6 +770,13 @@ export class SummaryService {
       if (!next) return true;
       const thisSpeaker = segments[idx]?.speaker;
       if (!thisSpeaker || !next.speaker) {
+        return true;
+      }
+      // A short NON-ANSWER ("Not confirmed yet.", "No idea.") is not an
+      // answer at all — the question stays open (mirrors the client).
+      const NON_ANSWER =
+        /^\s*(not confirmed|not sure|no idea|don't know|do not know|haven't checked|have not checked|not yet|need to check|tbd)\b/i;
+      if (NON_ANSWER.test(next.text)) {
         return true;
       }
       if (next.speaker === thisSpeaker) {
