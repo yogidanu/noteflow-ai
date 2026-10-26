@@ -325,7 +325,45 @@ function isHistoricalDecision(text: string): boolean {
 
 /** Words that mark a decision as overturning an earlier one (Fix 4). */
 const REVERSER_MARKERS =
-  /\b(postpone|postponed|delay|delayed|defer|deferred|cancel|cancelled|cancels|drop|dropped|remove|removed|scrap|abandon|revert|roll\s?back|pause|paused|hold off|no longer|instead)\b/i;
+  /\b(postpone|postponed|delay|delayed|defer|deferred|cancel|cancelled|cancels|drop|dropped|remove|removed|scrap|abandon|revert|roll\s?back|pause|paused|hold off|no longer|instead|moved?|reschedul\w*|push(?:ed|ing)?\s+(?:back|to)|shift(?:ed)?\s+to)\b/i;
+
+/** A spoken negation of an earlier decision ("We are not launching on
+ * Friday.") — mirrors DECISION_NEGATION in src/lib/llmSummarizer.ts. */
+const DECISION_NEGATION =
+  /\b(we(?:'re| are) not|i(?:'m| am) not|not going to|won't be|no longer)\b/i;
+
+/**
+ * Sentence splitter — mirrors splitSentences in
+ * src/lib/transcriptSanitizer.ts (same abbreviation guard, same
+ * boundary rule). Unpunctuated text is returned unchanged.
+ */
+const SENTENCE_ABBREVIATIONS = ["Mr.", "Mrs.", "Ms.", "Dr.", "e.g.", "i.e.", "vs.", "U.S.", "U.K."];
+
+function splitSentencesServer(text: string): string[] {
+  const trimmed = (text || "").trim();
+  if (!trimmed) return [];
+  let guarded = trimmed;
+  const placeholders = new Map<string, string>();
+  SENTENCE_ABBREVIATIONS.forEach((abbr, i) => {
+    const ph = `\u0001${i}\u0002`;
+    if (guarded.includes(abbr)) {
+      placeholders.set(ph, abbr);
+      guarded = guarded.split(abbr).join(ph);
+    }
+  });
+  const parts = guarded
+    .split(/(?<=[.!?…])\s+(?=[A-Z0-9"“‘'(])/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => {
+      let out = p;
+      placeholders.forEach((abbr, ph) => {
+        out = out.split(ph).join(abbr);
+      });
+      return out;
+    });
+  return parts.length > 0 ? parts : [trimmed];
+}
 
 /** Function/decision-framing words excluded from topic overlap (Fix 4). */
 const DECISION_STOPWORDS = new Set([
@@ -343,6 +381,10 @@ function decisionContentWords(text: string): Set<string> {
       .replace(/[^a-z0-9.\s]/g, " ")
       .split(/\s+/)
       .filter((w) => w.length >= 2 && !DECISION_STOPWORDS.has(w))
+      // Light stemming, mirrors the client: "launching" must match
+      // "launch" so a negation line can find the decision it cancels.
+      .map((w) => (w.length > 4 ? w.replace(/(ing|ed|es|s)$/, "") : w))
+      .filter((w) => w.length >= 2)
   );
 }
 
@@ -353,22 +395,41 @@ function decisionContentWords(text: string): Set<string> {
  * significant content-word overlap of at least 2 between the two
  * decisions' source segments.
  */
-function removeSupersededDecisions(decisions: DecisionItem[]): void {
+function removeSupersededDecisions(
+  decisions: DecisionItem[],
+  segments: Array<{ text: string; lineIndex?: number }>
+): void {
   const removed = new Set<number>();
   const wordSets = decisions.map((d) =>
     decisionContentWords(d.citation?.rawText || d.text)
   );
+  const overlapOf = (a: Set<string>, b: Set<string>) => {
+    let n = 0;
+    a.forEach((w) => {
+      if (b.has(w)) n++;
+    });
+    return n;
+  };
   decisions.forEach((entry, j) => {
     const sourceText = entry.citation?.rawText || entry.text;
     if (!REVERSER_MARKERS.test(sourceText)) return;
     for (let i = 0; i < j; i++) {
       if (removed.has(i)) continue;
-      let overlap = 0;
-      wordSets[i].forEach((w) => {
-        if (wordSets[j].has(w)) overlap++;
-      });
-      if (overlap >= 2) removed.add(i);
+      if (overlapOf(wordSets[i], wordSets[j]) >= 2) removed.add(i);
     }
+  });
+  // A spoken negation segment supersedes an earlier decision on the
+  // same topic (mirrors the client summarizer).
+  segments.forEach((seg, segIdx) => {
+    if (!DECISION_NEGATION.test(seg.text)) return;
+    const negWords = decisionContentWords(seg.text);
+    const negLine = seg.lineIndex ?? segIdx;
+    decisions.forEach((entry, i) => {
+      if (removed.has(i)) return;
+      const entryLine = entry.citation?.lineIndex ?? i;
+      if (entryLine >= negLine) return;
+      if (overlapOf(wordSets[i], negWords) >= 2) removed.add(i);
+    });
   });
   for (let i = decisions.length - 1; i >= 0; i--) {
     if (removed.has(i)) decisions.splice(i, 1);
@@ -434,7 +495,17 @@ export class SummaryService {
     refinement: string = "standard"
   ): AIAnalysisResult {
     const startTime = Date.now();
-    const segments = transcript.segments || [];
+    // One sentence per segment (mirrors the client sanitizer's
+    // splitSentences): a multi-sentence segment would otherwise collapse
+    // several tasks/decisions/questions into a single item. Split pieces
+    // keep the segment's speaker, timestamp and lineIndex, so citations
+    // still resolve to the same source moment.
+    const segments: DiarizedSegment[] = [];
+    for (const seg of transcript.segments || []) {
+      for (const sentence of splitSentencesServer(seg.text)) {
+        segments.push({ ...seg, text: sentence });
+      }
+    }
     const text = transcript.sanitizedText || segments.map((s) => s.text).join(" ");
     const words = text.trim().split(/\s+/).filter(Boolean);
     const wordCount = words.length;
@@ -560,7 +631,7 @@ export class SummaryService {
 
     // Fix 4: drop decisions a later decision reversed, so the log
     // reflects the meeting's final state.
-    removeSupersededDecisions(decisions);
+    removeSupersededDecisions(decisions, segments);
 
     // Deliberately NO fallback decision: a transcript with no explicit
     // decision gets an empty decision log. Promoting the longest segment
@@ -598,6 +669,24 @@ export class SummaryService {
           assignee = resolveRosterAssignee(nameWillMatch[1], speakers) ?? assignee;
         } else if (directMention) {
           assignee = resolveRosterAssignee(directMention[1], speakers) ?? assignee;
+        } else {
+          // Delegated commitment: "I will ask Meera to review…" — the
+          // person asked owns the task (mirrors the client summarizer).
+          const delegated = seg.text.match(
+            /\b(?:ask|asked|asking|get|getting|have|assign|assigned|delegate|delegated|tell|told)\s+([A-Za-z][a-z]+(?:\s[A-Z][a-z]+)?)\s+to\b/
+          );
+          if (delegated) {
+            const first = delegated[1].split(" ")[0].toLowerCase();
+            const PRONOUN_OR_GROUP = new Set([
+              "me", "you", "him", "her", "us", "them", "it", "the", "team",
+              "everyone", "someone", "anyone", "all",
+            ]);
+            if (!PRONOUN_OR_GROUP.has(first)) {
+              const captured =
+                delegated[1].charAt(0).toUpperCase() + delegated[1].slice(1);
+              assignee = resolveRosterAssignee(captured, speakers) ?? assignee;
+            }
+          }
         }
 
         // Display text: constrained normalization to imperative form
@@ -665,7 +754,21 @@ export class SummaryService {
       const next = segments[idx + 1];
       if (!next) return true;
       const thisSpeaker = segments[idx]?.speaker;
-      if (!thisSpeaker || !next.speaker || next.speaker === thisSpeaker) {
+      if (!thisSpeaker || !next.speaker) {
+        return true;
+      }
+      if (next.speaker === thisSpeaker) {
+        // Same-speaker continuation keeps the question live, except
+        // when the speaker answers it themselves with an explicit
+        // affirmation (mirrors the client summarizer).
+        const AFFIRMATION_OPENER =
+          /^(yes|yeah|yep|no|nope|correct|exactly|right|done|all good)\b/i;
+        if (
+          AFFIRMATION_OPENER.test(next.text.trim()) &&
+          classifySegment(next.text) !== "question"
+        ) {
+          return false;
+        }
         return true;
       }
       if (next.text.trim().length <= 15) return true;
