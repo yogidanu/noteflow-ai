@@ -26,15 +26,29 @@ export interface FinalTranscriptCandidates {
   webSpeechTranscript?: string | null;
 }
 
-export function resolveFinalTranscript(candidates: FinalTranscriptCandidates): string {
-  for (const candidate of [
-    candidates.sessionTranscript,
-    candidates.deepgramTranscript,
-    candidates.webSpeechTranscript,
-  ]) {
-    if (candidate && candidate.trim().length > 0) {
-      return candidate;
+export type FinalTranscriptSource = "session" | "deepgram" | "webspeech" | "none";
+
+/**
+ * Same precedence as resolveFinalTranscript, but also reports WHICH
+ * source won — so the UI can show it (a silent fallback to Web Speech
+ * captions quietly degraded summaries before this was surfaced).
+ */
+export function resolveFinalTranscriptWithSource(
+  candidates: FinalTranscriptCandidates
+): { transcript: string; source: FinalTranscriptSource } {
+  const ordered: Array<{ value?: string | null; source: FinalTranscriptSource }> = [
+    { value: candidates.sessionTranscript, source: "session" },
+    { value: candidates.deepgramTranscript, source: "deepgram" },
+    { value: candidates.webSpeechTranscript, source: "webspeech" },
+  ];
+  for (const { value, source } of ordered) {
+    if (value && value.trim().length > 0) {
+      return { transcript: value, source };
     }
   }
-  return "";
+  return { transcript: "", source: "none" };
+}
+
+export function resolveFinalTranscript(candidates: FinalTranscriptCandidates): string {
+  return resolveFinalTranscriptWithSource(candidates).transcript;
 }

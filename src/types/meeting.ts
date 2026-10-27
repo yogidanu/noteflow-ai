@@ -117,6 +117,18 @@ export interface MeetingOrganizer {
   email: string;
 }
 
+/**
+ * Which source produced a recording's final transcript. Recorded so a
+ * silent fallback to browser live captions (lower quality: no
+ * punctuation, no diarization) is VISIBLE in the UI instead of quietly
+ * degrading every summary — see MeetingHeaderBanner.
+ *  - "session": backend recording-session transcript
+ *  - "deepgram": Deepgram STT over the recorded audio
+ *  - "webspeech": browser live captions (fallback only)
+ *  - "fallback": no usable transcript could be produced
+ */
+export type TranscriptSourceType = "session" | "deepgram" | "webspeech" | "fallback";
+
 export interface DetectedMeeting {
   id: string;
   calendarEventId: string;
@@ -137,6 +149,8 @@ export interface DetectedMeeting {
   dedupHash: string;
   errorReason?: MeetRecordErrorType;
   sampleTranscriptPreset?: string;
+  transcriptSource?: TranscriptSourceType;
+  transcriptNote?: string;
 }
 
 export interface MeetingNote {
@@ -158,6 +172,9 @@ export interface MeetingNote {
   platform?: MeetingPlatformType;
   meetingUrl?: string;
   durationSeconds?: number;
+  transcriptSource?: TranscriptSourceType;
+  /** Why a fallback source was used (e.g. the Deepgram failure reason). */
+  transcriptNote?: string;
 }
 
 export type RefinementPromptType =

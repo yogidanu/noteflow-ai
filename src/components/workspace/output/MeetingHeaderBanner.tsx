@@ -43,6 +43,42 @@ export const MeetingHeaderBanner: React.FC<MeetingHeaderBannerProps> = ({
               Google Meet
             </span>
           )}
+          {/* Transcript provenance: which source produced the text this
+              summary was built from. A Web Speech fallback is basic
+              (no punctuation/diarization), so it is shown in warning
+              colours with the reason — never silently. */}
+          {meeting.transcriptSource === "deepgram" && (
+            <span
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--color-success)] bg-[var(--success-surface)] px-2.5 py-0.5 rounded-full border border-[var(--success-border)]"
+              title="Transcribed by Deepgram from the recorded audio"
+            >
+              Deepgram transcript
+            </span>
+          )}
+          {meeting.transcriptSource === "session" && (
+            <span
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--color-success)] bg-[var(--success-surface)] px-2.5 py-0.5 rounded-full border border-[var(--success-border)]"
+              title="Transcript produced by the backend recording session"
+            >
+              Session transcript
+            </span>
+          )}
+          {meeting.transcriptSource === "webspeech" && (
+            <span
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--color-warning)] bg-[var(--warning-surface)] px-2.5 py-0.5 rounded-full border border-[var(--warning-border)]"
+              title={meeting.transcriptNote || "Live browser captions were used for this summary"}
+            >
+              Live captions (basic)
+            </span>
+          )}
+          {meeting.transcriptSource === "fallback" && (
+            <span
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--color-warning)] bg-[var(--warning-surface)] px-2.5 py-0.5 rounded-full border border-[var(--warning-border)]"
+              title={meeting.transcriptNote || "No usable transcript could be produced"}
+            >
+              No transcript captured
+            </span>
+          )}
         </div>
 
         {/* View Full Transcript Direct CTA */}
@@ -60,6 +96,15 @@ export const MeetingHeaderBanner: React.FC<MeetingHeaderBannerProps> = ({
           <span className="font-mono text-[10px] text-[var(--text-muted)] font-normal">({wordCount} words)</span>
         </button>
       </div>
+
+      {/* Fallback reason, shown in plain sight (not buried in a tooltip)
+          so a degraded transcript is impossible to miss. */}
+      {(meeting.transcriptSource === "webspeech" || meeting.transcriptSource === "fallback") &&
+        meeting.transcriptNote && (
+          <p className="text-[11px] leading-relaxed text-[var(--color-warning)] bg-[var(--warning-surface)] border border-[var(--warning-border)] rounded-lg px-3 py-2">
+            {meeting.transcriptNote}
+          </p>
+        )}
 
       {/* Main Title */}
       <div>
