@@ -8,7 +8,7 @@ import {
 } from "../types/meeting";
 import { SAMPLE_1ON1_REORG_TRANSCRIPT, SAMPLE_ZOOM_TRANSCRIPT } from "../lib/sampleData";
 import { apiClient } from "../lib/apiClient";
-import { resolveFinalTranscript } from "../lib/resolveFinalTranscript";
+import { resolveFinalTranscriptWithSource } from "../lib/resolveFinalTranscript";
 import { webAudioRecorder } from "../lib/audioRecorder";
 import { desktopBridge } from "../lib/desktopBridge";
 import { MeetingDetectionStateType } from "../components/modals/MeetingDetectionSetupModal";
@@ -658,6 +658,9 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
         if (!isDemoMode) {
           let sessionTranscript = "";
           let deepgramTranscript = "";
+          // Why Deepgram did not produce the transcript, when it didn't —
+          // surfaced on the meeting so a fallback is never silent again.
+          let deepgramFailure = "";
 
           // Stop session and trigger synthesis on backend if active.
           // A session transcript, when the backend returns one, is the
@@ -688,22 +691,44 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
               });
               if (sttResult && (sttResult.rawVtt || sttResult.sanitizedText)) {
                 deepgramTranscript = sttResult.rawVtt || sttResult.sanitizedText;
+              } else {
+                deepgramFailure = "Deepgram returned no transcript for the recorded audio.";
               }
-            } catch (e) {
+            } catch (e: any) {
+              deepgramFailure = `Deepgram transcription failed: ${e?.message || "request error"}`;
               console.warn("[useMeetRecord] Live transcription fallback:", e);
             }
+          } else if (!audioBlob && !sessionTranscript) {
+            deepgramFailure = "No audio was captured to transcribe.";
           }
 
-          resolvedTranscript = resolveFinalTranscript({
+          const resolved = resolveFinalTranscriptWithSource({
             sessionTranscript,
             deepgramTranscript,
             webSpeechTranscript: liveSpeechTranscript,
           });
+          resolvedTranscript = resolved.transcript;
+
+          // Record the provenance on the meeting so the UI badge (and
+          // any future debugging) can show which source produced this
+          // summary — and, for the Web Speech fallback, why.
+          target.transcriptSource =
+            resolved.source === "none" ? "fallback" : resolved.source;
+          if (resolved.source === "webspeech") {
+            target.transcriptNote = deepgramFailure
+              ? `${deepgramFailure} Live browser captions were used instead — expect lower accuracy.`
+              : "Live browser captions were used — expect lower accuracy.";
+          } else if (resolved.source === "none" && deepgramFailure) {
+            target.transcriptNote = deepgramFailure;
+          }
         }
 
         // Safe Fallback: Ensure non-empty meeting dialogue so AI synthesis always succeeds
         if (!resolvedTranscript || resolvedTranscript.trim().length === 0) {
           resolvedTranscript = `${target.organizerName || "Meeting Host"} [00:00]: Meeting session recorded for "${target.title}". Key discussion points and action items logged during the call.`;
+          if (!isDemoMode && !target.transcriptSource) {
+            target.transcriptSource = "fallback";
+          }
         }
 
         setRecordingLifecycleState("COMPLETED");

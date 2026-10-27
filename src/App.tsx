@@ -219,6 +219,8 @@ export function App() {
       newMeeting.detectedMeetingId = completedMeeting.id;
       newMeeting.calendarEventId = completedMeeting.calendarEventId;
       newMeeting.recordingSessionId = completedMeeting.id;
+      newMeeting.transcriptSource = completedMeeting.transcriptSource;
+      newMeeting.transcriptNote = completedMeeting.transcriptNote;
 
       // 2. Switch view to Workspace Canvas & trigger AI synthesis through bridge
       setViewMode("workspace");
