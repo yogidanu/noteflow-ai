@@ -14,6 +14,29 @@ summaryRouter.post("/generate", requireAuth, summaryRateLimiter, async (req: Req
   try {
     const { transcript, rawInput, refinement = "standard" } = req.body;
 
+    // Shape/size validation (previously any object was passed straight
+    // into synthesis): strings are capped, objects must look like a
+    // transcript payload, rawInput must be a string.
+    const MAX_TRANSCRIPT_CHARS = 200_000;
+    if (typeof transcript === "string" && transcript.length > MAX_TRANSCRIPT_CHARS) {
+      return res.status(413).json({ success: false, error: "TRANSCRIPT_TOO_LARGE" });
+    }
+    if (rawInput !== undefined && typeof rawInput !== "string") {
+      return res.status(400).json({ success: false, error: "RAW_INPUT_MUST_BE_STRING" });
+    }
+    if (typeof rawInput === "string" && rawInput.length > MAX_TRANSCRIPT_CHARS) {
+      return res.status(413).json({ success: false, error: "TRANSCRIPT_TOO_LARGE" });
+    }
+    if (
+      transcript !== undefined &&
+      typeof transcript !== "string" &&
+      (typeof transcript !== "object" ||
+        transcript === null ||
+        (typeof (transcript as any).sanitizedText !== "string" && !Array.isArray((transcript as any).segments)))
+    ) {
+      return res.status(400).json({ success: false, error: "TRANSCRIPT_PAYLOAD_INVALID" });
+    }
+
     let transcriptPayload = transcript;
     if (typeof transcript === "string") {
       transcriptPayload = await sttService.processAudioStream({

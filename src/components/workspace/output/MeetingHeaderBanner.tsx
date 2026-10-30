@@ -1,5 +1,6 @@
 import React from "react";
 import { MeetingNote } from "../../../types/meeting";
+import { safeMeetingUrl } from "../../../lib/meetingUrl";
 import { Calendar, Users, ExternalLink, Clock, Layers } from "lucide-react";
 
 interface MeetingHeaderBannerProps {
@@ -128,11 +129,11 @@ export const MeetingHeaderBanner: React.FC<MeetingHeaderBannerProps> = ({
           <span>~{durationMin} min duration</span>
         </div>
 
-        {meeting.meetingUrl && (
+        {safeMeetingUrl(meeting.meetingUrl) && (
           <>
             <span className="text-[var(--text-subtle)] hidden sm:inline">•</span>
             <a
-              href={meeting.meetingUrl}
+              href={safeMeetingUrl(meeting.meetingUrl) ?? undefined}
               target="_blank"
               rel="noreferrer"
               className="inline-flex items-center gap-1 text-[var(--primary-action)] hover:underline font-medium transition-colors focus-visible:ring-2 focus-visible:ring-[var(--border-focus)] outline-none rounded"

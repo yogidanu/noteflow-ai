@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Square, Pause, Play, Volume2, Maximize2, Minimize2, ExternalLink } from "lucide-react";
 import { DetectedMeeting } from "../../../types/meeting";
+import { safeMeetingUrl } from "../../../lib/meetingUrl";
 
 interface LiveRecordingWidgetProps {
   meeting: DetectedMeeting;
@@ -126,9 +127,9 @@ export const LiveRecordingWidget: React.FC<LiveRecordingWidgetProps> = ({
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
-            {meeting.meetingUrl && (
+            {safeMeetingUrl(meeting.meetingUrl) && (
               <a
-                href={meeting.meetingUrl}
+                href={safeMeetingUrl(meeting.meetingUrl) ?? undefined}
                 target="_blank"
                 rel="noreferrer"
                 aria-label="Open Google Meet link"

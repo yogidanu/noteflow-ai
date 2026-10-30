@@ -5,6 +5,7 @@ import { tokenVault } from "../security/tokenVault.js";
 import { oauthStateStore, OAuthStateRecord } from "../security/stateStore.js";
 import { requireAuth } from "../middleware/authMiddleware.js";
 import { authRateLimiter } from "../middleware/rateLimiter.js";
+import { debugLog } from "../security/debugLog.js";
 
 export const authRouter = Router();
 
@@ -51,7 +52,7 @@ function isAllowedRedirectUri(uri: string): boolean {
  * Returns the official Google OAuth 2.0 authorization URL with CSRF state and optional PKCE.
  */
 authRouter.get("/google/url", (req: Request, res: Response) => {
-  console.log("[OAuth DEBUG] AUTH_URL_START", { timestamp: new Date().toISOString(), ip: req.ip });
+  debugLog("[OAuth DEBUG] AUTH_URL_START", { timestamp: new Date().toISOString(), ip: req.ip });
 
   // Post-auth destination for user (defaults to frontend web app)
   const clientDestination = (req.query.redirectUri as string) || (req.query.clientRedirectUri as string) || config.frontendUrl;
@@ -86,7 +87,7 @@ authRouter.get("/google/url", (req: Request, res: Response) => {
   });
 
   const stateFingerprint = crypto.createHash("sha256").update(state).digest("hex").substring(0, 12);
-  console.log("[OAuth DEBUG] state generated", {
+  debugLog("[OAuth DEBUG] state generated", {
     stateFingerprint,
     storageType: "stateless_aes256_gcm",
     expiresInMs: 600000,
@@ -136,7 +137,7 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
   const error = req.query.error as string | undefined;
 
   const stateFingerprint = state ? crypto.createHash("sha256").update(state).digest("hex").substring(0, 12) : "none";
-  console.log("[OAuth DEBUG] CALLBACK_RECEIVED", {
+  debugLog("[OAuth DEBUG] CALLBACK_RECEIVED", {
     returnedStatePresent: Boolean(state),
     stateFingerprint,
     codePresent: Boolean(code),
@@ -146,10 +147,10 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
 
   try {
     // 1. Atomically retrieve and consume CSRF state nonce (single-use)
-    console.log("[OAuth DEBUG] STATE_LOOKUP", { stateFingerprint });
+    debugLog("[OAuth DEBUG] STATE_LOOKUP", { stateFingerprint });
     const stateRecord = state ? oauthStateStore.consumeState(state) : null;
     const stateFound = Boolean(stateRecord);
-    console.log("[OAuth DEBUG] state found=" + stateFound, {
+    debugLog("[OAuth DEBUG] state found=" + stateFound, {
       stateFingerprint,
       flowType: stateRecord?.flowType,
     });
@@ -169,7 +170,7 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
     // 2. Handle duplicate callback within idempotency window (e.g. Chrome prefetch / duplicate redirect)
     if (stateRecord?.isDuplicateCallback && stateRecord.resolvedSession) {
       const sess = stateRecord.resolvedSession;
-      console.log(`[OAuth DEBUG] Fast-forwarding idempotent duplicate callback for ${sess.userId}`);
+      debugLog(`[OAuth DEBUG] Fast-forwarding idempotent duplicate callback for ${sess.userId}`);
       if (isDesktopFlow) {
         return res.redirect(
           `noteflow://auth/callback?userId=${encodeURIComponent(sess.userId)}&email=${encodeURIComponent(sess.email)}&name=${encodeURIComponent(sess.name)}`
@@ -239,7 +240,7 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
       return res.redirect(`${config.frontendUrl}?error=GOOGLE_AUTH_EXCHANGE_FAILED&reason=SERVER_MISSING_CLIENT_SECRET`);
     }
 
-    console.log("[OAuth DEBUG] TOKEN_EXCHANGE_INITIATED", {
+    debugLog("[OAuth DEBUG] TOKEN_EXCHANGE_INITIATED", {
       clientIdPrefix: config.google.clientId ? config.google.clientId.substring(0, 16) + "..." : "none",
       redirectUri: config.google.redirectUri,
       hasSecret: Boolean(config.google.clientSecret),
@@ -349,7 +350,7 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
     // Stable Canonical User ID: Priority on Google Subject ID
     const userId = `usr_g_${crypto.createHash("sha256").update(googleSubjectId).digest("hex").substring(0, 16)}`;
 
-    console.log("[OAuth DEBUG] CANONICAL_IDENTITY_RESOLVED", {
+    debugLog("[OAuth DEBUG] CANONICAL_IDENTITY_RESOLVED", {
       userId,
       googleSubjectFingerprint: crypto.createHash("sha256").update(googleSubjectId).digest("hex").substring(0, 12),
       emailDomain: userEmail.includes("@") ? userEmail.split("@")[1] : "unknown",
@@ -403,7 +404,7 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
         createdAt: Date.now(),
       });
 
-      console.log(`[OAuth DEBUG] Redirecting desktop OAuth callback to noteflow://auth/callback`);
+      debugLog(`[OAuth DEBUG] Redirecting desktop OAuth callback to noteflow://auth/callback`);
       const desktopRedirect = new URL("noteflow://auth/callback");
       desktopRedirect.searchParams.set("code", oneTimeCode);
       desktopRedirect.searchParams.set("state", state);
@@ -430,7 +431,7 @@ authRouter.get("/google/callback", async (req: Request, res: Response) => {
     if (lastName) redirectUrl.searchParams.set("lastName", lastName);
     if (userAvatar) redirectUrl.searchParams.set("avatarUrl", userAvatar);
 
-    console.log(`[OAuth DEBUG] Redirecting web OAuth callback to ${redirectUrl.origin}`);
+    debugLog(`[OAuth DEBUG] Redirecting web OAuth callback to ${redirectUrl.origin}`);
     return res.redirect(redirectUrl.toString());
   } catch (err: any) {
     console.error("[OAuth DEBUG] Fatal error in GET /google/callback:", err);

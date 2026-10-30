@@ -176,7 +176,10 @@ export class SpeechToTextService {
     const deepgramKey = config.stt?.apiKey || process.env.DEEPGRAM_API_KEY;
     const provider = deepgramKey && !deepgramKey.includes("sample") ? "deepgram" : params.realTranscriptStream ? "local_speech" : "fixture";
 
-    // Validate audio buffer if provided
+    // Validate audio buffer if provided — and ENFORCE the verdict:
+    // an invalid/empty buffer used to be logged and then processed
+    // anyway, burning a Deepgram call on garbage.
+    let audioValidationError: string | undefined;
     if (params.audioBuffer) {
       const validation = validateAudioBuffer(params.audioBuffer);
       console.log("[SpeechToTextService] AUDIO_VALIDATION", {
@@ -185,6 +188,11 @@ export class SpeechToTextService {
         byteLength: validation.byteLength,
         hasContent: validation.hasContent,
       });
+      if (!validation.isValid) {
+        audioValidationError = `Audio validation failed (${validation.error || "unrecognized format"}).`;
+      } else if (!validation.hasContent) {
+        audioValidationError = "Audio contains no detectable sound.";
+      }
     }
 
     recordingLogger.log({
@@ -205,13 +213,15 @@ export class SpeechToTextService {
     let sttError: string | undefined;
     const hasRealKey = Boolean(deepgramKey && !deepgramKey.includes("sample"));
     const hasAudio = Boolean(params.audioBuffer && params.audioBuffer.length > 0);
-    if (hasAudio && !hasRealKey) {
+    if (audioValidationError) {
+      sttError = audioValidationError;
+    } else if (hasAudio && !hasRealKey) {
       sttError = "Deepgram is not configured on the server (DEEPGRAM_API_KEY missing or still a placeholder).";
     }
 
     // 1. Live Deepgram Nova-3 STT pipeline (keyterm prompting) if API
-    // key and audio buffer are provided
-    if (hasRealKey && hasAudio) {
+    // key and a VALID audio buffer are provided
+    if (hasRealKey && hasAudio && !audioValidationError) {
       try {
         const response = await fetch(
           `https://api.deepgram.com/v1/listen?${buildDeepgramParams().toString()}`,

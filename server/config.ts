@@ -112,6 +112,24 @@ const sessionSecret = resolveSecret(
   DEV_SESSION_SECRET,
 );
 
+// Third-party secrets fail closed in production too: booting with the
+// built-in "sample" placeholders silently breaks OAuth and speech-to-
+// text (and once masked a missing Deepgram key for days). Refuse.
+if (isProduction) {
+  const requiredRealSecrets: Array<["GOOGLE_CLIENT_ID" | "GOOGLE_CLIENT_SECRET" | "DEEPGRAM_API_KEY", string | undefined]> = [
+    ["GOOGLE_CLIENT_ID", process.env.GOOGLE_CLIENT_ID],
+    ["GOOGLE_CLIENT_SECRET", process.env.GOOGLE_CLIENT_SECRET],
+    ["DEEPGRAM_API_KEY", process.env.DEEPGRAM_API_KEY],
+  ];
+  for (const [name, value] of requiredRealSecrets) {
+    if (!value || value.includes("sample")) {
+      throw new Error(
+        `[Security Error] ${name} is not set to a real value. Production refuses to boot with the built-in sample placeholder.`,
+      );
+    }
+  }
+}
+
 export const config = {
   port: parseInt(process.env.PORT || "4000", 10),
   nodeEnv: process.env.NODE_ENV || "development",
