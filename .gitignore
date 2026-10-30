@@ -9,6 +9,7 @@ lerna-debug.log*
 
 # Dependencies & Build Outputs
 node_modules
+.vite/
 dist
 dist-ssr
 dist-desktop

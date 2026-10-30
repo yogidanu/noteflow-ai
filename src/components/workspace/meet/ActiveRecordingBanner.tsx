@@ -1,4 +1,5 @@
 import React from "react";
+import { safeMeetingUrl } from "../../../lib/meetingUrl";
 import {
   Square,
   Pause,
@@ -262,9 +263,9 @@ export const ActiveRecordingBanner: React.FC<ActiveRecordingBannerProps> = ({
       {/* Action Controls */}
       <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
         <div className="flex items-center gap-2">
-          {meeting.meetingUrl && (
+          {safeMeetingUrl(meeting.meetingUrl) && (
             <a
-              href={meeting.meetingUrl}
+              href={safeMeetingUrl(meeting.meetingUrl) ?? undefined}
               target="_blank"
               rel="noreferrer"
               className="h-10 px-4 rounded-xl bg-[var(--surface-subtle)] hover:bg-[var(--surface-card)] border border-[var(--border-default)] text-xs font-semibold text-[var(--text-primary)] flex items-center gap-2 transition-all cursor-pointer"

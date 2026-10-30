@@ -3,6 +3,7 @@ import path from "path";
 import { EventEmitter } from "events";
 import { computeMeetingHash } from "../security/crypto.js";
 import { recordingLogger } from "../observability/recordingLogger.js";
+import { debugLog } from "../security/debugLog.js";
 
 export type RecordingLifecycleStatus =
   | "INITIALIZING"
@@ -154,7 +155,7 @@ class RecordingSessionService extends EventEmitter {
     this.sessions.set(recordingSessionId, session);
     this.persistToDisk();
 
-    console.log("[RECORDING DEBUG] SESSION_CREATED", {
+    debugLog("[RECORDING DEBUG] SESSION_CREATED", {
       recordingSessionId,
       meetingId: params.meetingId,
       status: "INITIALIZING",
@@ -209,7 +210,7 @@ class RecordingSessionService extends EventEmitter {
     this.durationTimers.set(session.recordingSessionId, timer);
     this.persistToDisk();
 
-    console.log("[RECORDING DEBUG] RECORDING_STARTED", {
+    debugLog("[RECORDING DEBUG] RECORDING_STARTED", {
       recordingSessionId: session.recordingSessionId,
       status: "RECORDING",
       audioCaptureStartedAt: new Date(session.audioCaptureStartedAt).toISOString(),
@@ -243,6 +244,15 @@ class RecordingSessionService extends EventEmitter {
       throw new Error("RECORDING_SESSION_NOT_FOUND");
     }
 
+    // Per-session byte ceiling: recordings are capped at 180 minutes
+    // (config.recording.maxDurationMinutes); ~150 MB is generous headroom
+    // for that at speech bitrates and stops unbounded disk growth from
+    // chunk spam.
+    const MAX_SESSION_AUDIO_BYTES = 150 * 1024 * 1024;
+    if (session.audioBytes + chunkBuffer.length > MAX_SESSION_AUDIO_BYTES) {
+      throw new Error("AUDIO_SESSION_LIMIT_EXCEEDED");
+    }
+
     const chunkBytes = chunkBuffer.length;
     session.audioChunkCount += 1;
     session.audioBytes += chunkBytes;
@@ -260,7 +270,7 @@ class RecordingSessionService extends EventEmitter {
 
     this.persistToDisk();
 
-    console.log("[RECORDING DEBUG] AUDIO_CHUNK_RECEIVED", {
+    debugLog("[RECORDING DEBUG] AUDIO_CHUNK_RECEIVED", {
       recordingSessionId: session.recordingSessionId,
       chunkIndex: session.audioChunkCount,
       chunkBytes,
@@ -306,7 +316,7 @@ class RecordingSessionService extends EventEmitter {
     session.updatedAt = Date.now();
     this.persistToDisk();
 
-    console.log("[RECORDING DEBUG] PAUSE_TOGGLED", {
+    debugLog("[RECORDING DEBUG] PAUSE_TOGGLED", {
       recordingSessionId: session.recordingSessionId,
       isPaused: session.isPaused,
     });
@@ -346,7 +356,7 @@ class RecordingSessionService extends EventEmitter {
     session.updatedAt = now;
     this.persistToDisk();
 
-    console.log("[RECORDING DEBUG] RECORDING_STOPPED", {
+    debugLog("[RECORDING DEBUG] RECORDING_STOPPED", {
       recordingSessionId: session.recordingSessionId,
       status: "STOPPING",
       durationSeconds: session.durationSeconds,
@@ -427,7 +437,7 @@ class RecordingSessionService extends EventEmitter {
     session.updatedAt = Date.now();
     this.persistToDisk();
 
-    console.log("[RECORDING DEBUG] SESSION_COMPLETED", {
+    debugLog("[RECORDING DEBUG] SESSION_COMPLETED", {
       recordingSessionId: session.recordingSessionId,
       meetingId: session.meetingId,
       calendarEventId: session.calendarEventId,
@@ -483,7 +493,7 @@ class RecordingSessionService extends EventEmitter {
     session.updatedAt = Date.now();
     this.persistToDisk();
 
-    console.log("[RECORDING DEBUG] SESSION_FAILED", {
+    debugLog("[RECORDING DEBUG] SESSION_FAILED", {
       recordingSessionId: session.recordingSessionId,
       status: "FAILED",
       errorCode,

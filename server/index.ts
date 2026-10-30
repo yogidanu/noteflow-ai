@@ -11,6 +11,24 @@ const app = express();
 // Trust reverse proxies (AWS ALB, Cloudflare, Traefik) for HTTPS & client IP resolution
 app.set("trust proxy", 1);
 
+// Don't advertise the framework.
+app.disable("x-powered-by");
+
+// Baseline security headers on every response (helmet-equivalent set,
+// hand-rolled to avoid a new dependency). HSTS only in production,
+// where TLS is terminated by the host in front of this app.
+app.use((_req: Request, res: Response, next: NextFunction) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(self), geolocation=()");
+  res.setHeader("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
+  if (config.isProduction) {
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
+  next();
+});
+
 // Production Structured Request Logging
 app.use((req: Request, res: Response, next: NextFunction) => {
   const start = Date.now();
@@ -94,7 +112,8 @@ app.use("/api/calendar", calendarRouter);
 app.use("/api/recording", recordingRouter);
 app.use("/api/summary", summaryRouter);
 
-// Global Error Handler
+// Global Error Handler. Details are logged server-side; in production
+// the client gets a generic code, not the internal error message.
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   console.error("[ServerError]", {
     timestamp: new Date().toISOString(),
@@ -104,7 +123,7 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 
   res.status(500).json({
     success: false,
-    error: err.message || "INTERNAL_SERVER_ERROR",
+    error: config.isProduction ? "INTERNAL_SERVER_ERROR" : err.message || "INTERNAL_SERVER_ERROR",
   });
 });
 

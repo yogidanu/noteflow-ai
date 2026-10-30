@@ -46,8 +46,16 @@ const rawApiUrl =
     ? "https://noteflow-ai-3nal.onrender.com/api"
     : "http://localhost:4000/api");
 
+// In production builds, never speak to the API over plaintext HTTP
+// (a misconfigured VITE_API_URL used to be honored silently). Localhost
+// stays exempt for local development against a prod bundle.
+const enforcedApiUrl =
+  isProd && rawApiUrl.startsWith("http://") && !/^http:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(rawApiUrl)
+    ? rawApiUrl.replace(/^http:\/\//, "https://")
+    : rawApiUrl;
+
 // Normalize to ensure consistent trailing /api without double slashes
-export const API_BASE_URL: string = rawApiUrl.replace(/\/+$/, "");
+export const API_BASE_URL: string = enforcedApiUrl.replace(/\/+$/, "");
 
 /**
  * Constructs a fully qualified API endpoint URL without duplicate /api prefixes

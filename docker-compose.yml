@@ -1,5 +1,12 @@
 version: "3.8"
 
+# Secrets are NEVER committed here. Every secret is interpolated from an
+# untracked .env file next to this compose file; ${VAR:?} makes compose
+# fail loudly when one is missing instead of booting with a public value.
+# Required in .env: TOKEN_ENCRYPTION_KEY (64 hex), SESSION_SECRET (32+
+# chars), POSTGRES_PASSWORD, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
+# DEEPGRAM_API_KEY.
+
 services:
   app:
     build:
@@ -14,9 +21,12 @@ services:
       - PORT=4000
       - FRONTEND_URL=https://noteflow-ai-cc3p.vercel.app
       - CORS_ORIGIN=http://localhost:5173,http://localhost:5174,http://localhost:3000,https://noteflow-ai-cc3p.vercel.app,https://app.noteflow.ai
-      - TOKEN_ENCRYPTION_KEY=dev-only-generate-your-own-key
-      - SESSION_SECRET=dev-only-generate-your-own-secret
-      - DATABASE_URL=postgresql://noteflow_user:noteflow_secret_password@postgres:5432/noteflow_db
+      - TOKEN_ENCRYPTION_KEY=${TOKEN_ENCRYPTION_KEY:?set TOKEN_ENCRYPTION_KEY in .env}
+      - SESSION_SECRET=${SESSION_SECRET:?set SESSION_SECRET in .env}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:?set GOOGLE_CLIENT_ID in .env}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:?set GOOGLE_CLIENT_SECRET in .env}
+      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY:?set DEEPGRAM_API_KEY in .env}
+      - DATABASE_URL=postgresql://noteflow_user:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/noteflow_db
       - REDIS_URL=redis://redis:6379
     depends_on:
       postgres:
@@ -30,10 +40,11 @@ services:
     restart: unless-stopped
     environment:
       - POSTGRES_USER=noteflow_user
-      - POSTGRES_PASSWORD=dev-only-password
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       - POSTGRES_DB=noteflow_db
     ports:
-      - "5432:5432"
+      # Localhost only — never publish the database on all interfaces.
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -47,7 +58,8 @@ services:
     container_name: noteflow-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      # Localhost only — same reasoning as postgres.
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:

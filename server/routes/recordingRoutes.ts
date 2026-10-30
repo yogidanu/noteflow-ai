@@ -138,6 +138,20 @@ const handleAudioChunk = (req: Request, res: Response) => {
     return res.status(400).json({ success: false, error: "AUDIO_CHUNK_EMPTY" });
   }
 
+  // IDOR Guard: only session participants may append audio (same check
+  // as pause/stop/status — this route previously skipped it).
+  const chunkSession = recordingSessionService.resolveSession(sessionId);
+  if (!chunkSession) {
+    return res.status(404).json({ success: false, error: "SESSION_NOT_FOUND" });
+  }
+  if (!chunkSession.userIds.includes(userId) && req.user?.role !== "admin") {
+    return res.status(403).json({
+      success: false,
+      error: "FORBIDDEN_NOT_SESSION_PARTICIPANT",
+      message: "You are not authorized to add audio to this recording session.",
+    });
+  }
+
   try {
     const result = recordingSessionService.appendAudioChunk(sessionId, chunkBuffer, userId);
     res.json({
@@ -153,12 +167,15 @@ const handleAudioChunk = (req: Request, res: Response) => {
       },
     });
   } catch (err: any) {
+    if (err?.message === "AUDIO_SESSION_LIMIT_EXCEEDED") {
+      return res.status(413).json({ success: false, error: "AUDIO_SESSION_LIMIT_EXCEEDED" });
+    }
     res.status(404).json({ success: false, error: err.message || "SESSION_NOT_FOUND" });
   }
 };
 
-recordingRouter.post("/chunk", requireAuth, handleAudioChunk);
-recordingRouter.post("/session/:id/chunk", requireAuth, handleAudioChunk);
+recordingRouter.post("/chunk", requireAuth, recordingRateLimiter, handleAudioChunk);
+recordingRouter.post("/session/:id/chunk", requireAuth, recordingRateLimiter, handleAudioChunk);
 
 /**
  * POST /api/recording/pause or POST /api/recording/session/:id/pause
@@ -278,11 +295,15 @@ recordingRouter.post("/session/:id/stop", requireAuth, handleStopRecording);
  * POST /api/recording/transcribe
  * Accepts recorded audio buffer or base64 stream and returns diarized transcript payload.
  */
-recordingRouter.post("/transcribe", requireAuth, async (req: Request, res: Response) => {
+recordingRouter.post("/transcribe", requireAuth, recordingRateLimiter, async (req: Request, res: Response) => {
   try {
     const meetingId = (req.body?.meetingId as string) || (req.query?.meetingId as string) || `meet-${Date.now()}`;
     const durationSeconds = Number(req.body?.durationSeconds) || 60;
     let audioBuffer: Buffer | undefined;
+
+    if (req.body?.audioBase64 !== undefined && typeof req.body.audioBase64 !== "string") {
+      return res.status(400).json({ success: false, error: "AUDIO_BASE64_MUST_BE_STRING" });
+    }
 
     if (Buffer.isBuffer(req.body)) {
       audioBuffer = req.body;
@@ -303,13 +324,15 @@ recordingRouter.post("/transcribe", requireAuth, async (req: Request, res: Respo
       return res.status(400).json({ success: false, error: "No audio was received by the server." });
     }
 
+    // NOTE: no sampleTranscriptPreset is accepted here — this public
+    // route transcribes real audio only; preset/sample flows are
+    // internal (summary generation) and must not be client-injectable.
     const transcript = await sttService.processAudioStream({
       meetingId,
       durationSeconds,
       audioBuffer,
       mimeType: (req.body?.mimeType as string) || "audio/webm",
       knownAttendees,
-      sampleTranscriptPreset: req.body?.sampleTranscriptPreset,
     });
 
     // A silent empty transcript used to masquerade as success and the
@@ -323,9 +346,13 @@ recordingRouter.post("/transcribe", requireAuth, async (req: Request, res: Respo
       data: transcript,
     });
   } catch (err: any) {
+    // Unexpected internal failure: log it, but in production return the
+    // generic code (deliberate STT diagnostics travel via the 502
+    // sttError path above, not this catch).
+    console.error("[Transcribe] Unexpected failure:", err);
     res.status(500).json({
       success: false,
-      error: err.message || "TRANSCRIPTION_FAILED",
+      error: process.env.NODE_ENV === "production" ? "TRANSCRIPTION_FAILED" : err.message || "TRANSCRIPTION_FAILED",
     });
   }
 });
@@ -372,6 +399,16 @@ recordingRouter.get("/session/:id/artifact", requireAuth, (req: Request, res: Re
   const session = recordingSessionService.resolveSession(req.params.id);
   if (!session || !session.audioArtifactPath) {
     return res.status(404).json({ success: false, error: "ARTIFACT_NOT_FOUND" });
+  }
+
+  // IDOR Guard: artifact metadata only for session participants.
+  const userId = req.user?.userId || "user_default_workspace_id";
+  if (!session.userIds.includes(userId) && req.user?.role !== "admin") {
+    return res.status(403).json({
+      success: false,
+      error: "FORBIDDEN_NOT_SESSION_PARTICIPANT",
+      message: "You are not authorized to view this recording session.",
+    });
   }
 
   const exists = fs.existsSync(session.audioArtifactPath);

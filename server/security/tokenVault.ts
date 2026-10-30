@@ -255,13 +255,17 @@ class TokenVault {
     if (!record) return null;
 
     const current = record.profile;
+    // Only string values are applied — a non-string field used to crash
+    // .trim() into a 500; now it is ignored like an absent field.
+    const str = (value: string | undefined, fallback: string) =>
+      typeof value === "string" ? value.trim() : fallback;
     const updatedProfile: NoteFlowUserProfile = {
       ...current,
-      fullName: updates.fullName !== undefined ? updates.fullName.trim() : current.fullName,
-      city: updates.city !== undefined ? updates.city.trim() : current.city,
-      country: updates.country !== undefined ? updates.country.trim() : current.country,
-      avatarUrl: updates.avatarUrl !== undefined ? updates.avatarUrl.trim() : current.avatarUrl,
-      organization: updates.organization !== undefined ? updates.organization.trim() : current.organization,
+      fullName: str(updates.fullName, current.fullName),
+      city: str(updates.city, current.city),
+      country: str(updates.country, current.country),
+      avatarUrl: str(updates.avatarUrl, current.avatarUrl),
+      organization: str(updates.organization, current.organization),
       profileCompleted: true,
       updatedAt: new Date().toISOString(),
     };

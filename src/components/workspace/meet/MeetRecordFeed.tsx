@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { safeMeetingUrl } from "../../../lib/meetingUrl";
 import {
   Calendar,
   Radio,
@@ -371,9 +372,9 @@ export const MeetRecordFeed: React.FC<MeetRecordFeedProps> = ({
 
                   {/* Meeting Actions */}
                   <div className="flex items-center gap-2 shrink-0">
-                    {meeting.meetingUrl && (
+                    {safeMeetingUrl(meeting.meetingUrl) && (
                       <a
-                        href={meeting.meetingUrl}
+                        href={safeMeetingUrl(meeting.meetingUrl) ?? undefined}
                         target="_blank"
                         rel="noreferrer"
                         className="h-8 px-3 rounded-xl bg-[var(--surface-subtle)] hover:bg-[var(--surface-card)] border border-[var(--border-default)] text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center gap-1.5 transition-colors cursor-pointer"

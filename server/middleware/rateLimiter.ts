@@ -10,7 +10,10 @@ export function createRateLimiter(options: RateLimitConfig) {
   const hits = new Map<string, { count: number; resetTime: number }>();
 
   return (req: Request, res: Response, next: NextFunction) => {
-    const key = req.user?.userId || req.ip || "global_client";
+    // Key by IP + claimed user together: rotating either one alone does
+    // not reset the budget (the userId is self-asserted until real
+    // session verification lands, so it must never be the only key).
+    const key = `${req.ip || "no-ip"}:${req.user?.userId || "anon"}`;
     const now = Date.now();
 
     const record = hits.get(key);
