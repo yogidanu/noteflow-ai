@@ -15,6 +15,54 @@ export interface SanitizedTranscriptPayload {
   detectedSpeakers: string[];
   durationSeconds: number;
   segments: DiarizedSegment[];
+  /** Set when a real audio buffer was supplied but STT produced nothing:
+   *  the specific reason (missing key, Deepgram HTTP error, no speech
+   *  detected). The transcribe route turns this into an error response
+   *  so the failure is visible in the client instead of a silent empty
+   *  transcript. Absent on success and on preset/fixture flows. */
+  sttError?: string;
+}
+
+/**
+ * Domain vocabulary boosted via Deepgram Nova-3 `keyterm` prompting.
+ * Web Speech has no equivalent, which is how these terms used to come
+ * back as homophones (waitlist -> "weightlif", NoteFlow -> "note to a").
+ */
+export const DEEPGRAM_KEYTERMS = [
+  "NoteFlow",
+  "NoteFlow AI",
+  "waitlist",
+  "Pro tier",
+  "end-to-end",
+  "action items",
+  "decision log",
+  "follow-up",
+  "roadmap",
+  "sprint",
+  "stakeholder",
+  "onboarding",
+  "churn",
+  "upsell",
+  "cross-sell",
+] as const;
+
+/**
+ * Builds the Deepgram pre-recorded request parameters: Nova-3 with
+ * keyterm prompting (keyterm is a Nova-3 parameter; the Nova-2
+ * `keywords` param must NOT be sent alongside it).
+ */
+export function buildDeepgramParams(): URLSearchParams {
+  const params = new URLSearchParams();
+  params.set("model", "nova-3");
+  params.set("diarize", "true");
+  params.set("smart_format", "true");
+  params.set("punctuate", "true");
+  params.set("utterances", "true");
+  params.set("utt_split", "1.2");
+  for (const term of DEEPGRAM_KEYTERMS) {
+    params.append("keyterm", term);
+  }
+  return params;
 }
 
 export interface AudioValidationResult {
@@ -150,11 +198,23 @@ export class SpeechToTextService {
       mimeType: params.mimeType || "audio/webm",
     });
 
-    // 1. Live Deepgram Nova-2 STT Pipeline if API key and audio buffer are provided
-    if (deepgramKey && !deepgramKey.includes("sample") && params.audioBuffer && params.audioBuffer.length > 0) {
+    // Why Deepgram produced nothing, when a real audio buffer was
+    // supplied but STT yields no transcript. Carried on the payload as
+    // sttError so the failure reaches the user instead of a silent
+    // empty transcript (the transcribe route turns it into an error).
+    let sttError: string | undefined;
+    const hasRealKey = Boolean(deepgramKey && !deepgramKey.includes("sample"));
+    const hasAudio = Boolean(params.audioBuffer && params.audioBuffer.length > 0);
+    if (hasAudio && !hasRealKey) {
+      sttError = "Deepgram is not configured on the server (DEEPGRAM_API_KEY missing or still a placeholder).";
+    }
+
+    // 1. Live Deepgram Nova-3 STT pipeline (keyterm prompting) if API
+    // key and audio buffer are provided
+    if (hasRealKey && hasAudio) {
       try {
         const response = await fetch(
-          "https://api.deepgram.com/v1/listen?model=nova-2&diarize=true&smart_format=true&punctuate=true&utterances=true&utt_split=1.2",
+          `https://api.deepgram.com/v1/listen?${buildDeepgramParams().toString()}`,
           {
             method: "POST",
             headers: {
@@ -165,7 +225,21 @@ export class SpeechToTextService {
           }
         );
 
-        if (response.ok) {
+        if (!response.ok) {
+          const detail = (await response.text().catch(() => "")).slice(0, 300);
+          sttError = `Deepgram rejected the audio (HTTP ${response.status})${detail ? `: ${detail}` : ""}`;
+          recordingLogger.log({
+            event: "TRANSCRIPTION_FAILED",
+            timestamp: new Date().toISOString(),
+            userId: params.userId || "user_workspace",
+            meetingId: params.meetingId,
+            recordingId: params.recordingId || `rec_${params.meetingId}`,
+            provider: "deepgram",
+            durationMs: Date.now() - startTime,
+            errorCode: `DEEPGRAM_HTTP_${response.status}`,
+            errorMessage: sttError,
+          });
+        } else {
           const dgData: any = await response.json();
           const utterances = dgData.results?.utterances || [];
 
@@ -232,8 +306,12 @@ export class SpeechToTextService {
               segments,
             };
           }
+
+          // Deepgram answered OK but found no speech segments.
+          sttError = "Deepgram processed the audio but detected no speech.";
         }
       } catch (err: any) {
+        sttError = `Deepgram request failed: ${err.message}`;
         console.warn("[SpeechToTextService] Deepgram transcription fallback:", err.message);
         recordingLogger.log({
           event: "TRANSCRIPTION_FAILED",
@@ -276,6 +354,7 @@ export class SpeechToTextService {
         detectedSpeakers: [],
         durationSeconds: params.durationSeconds || 0,
         segments: [],
+        ...(sttError ? { sttError } : {}),
       };
     }
 

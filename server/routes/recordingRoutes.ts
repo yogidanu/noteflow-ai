@@ -299,13 +299,24 @@ recordingRouter.post("/transcribe", requireAuth, async (req: Request, res: Respo
       }
     }
 
+    if (!audioBuffer || audioBuffer.length === 0) {
+      return res.status(400).json({ success: false, error: "No audio was received by the server." });
+    }
+
     const transcript = await sttService.processAudioStream({
       meetingId,
       durationSeconds,
       audioBuffer,
+      mimeType: (req.body?.mimeType as string) || "audio/webm",
       knownAttendees,
       sampleTranscriptPreset: req.body?.sampleTranscriptPreset,
     });
+
+    // A silent empty transcript used to masquerade as success and the
+    // client quietly fell back to browser captions. Surface the reason.
+    if (transcript.sttError) {
+      return res.status(502).json({ success: false, error: transcript.sttError });
+    }
 
     res.json({
       success: true,
