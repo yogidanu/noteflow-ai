@@ -571,38 +571,49 @@ export class MeetRecordApiClient {
     meetingId?: string;
     knownAttendees?: Array<{ name: string; email: string }>;
   }): Promise<{ rawVtt: string; sanitizedText: string; segments: any[] } | null> {
-    try {
-      const available = await this.checkAvailability();
-      if (!available) return null;
-
-      const buffer = await params.audioBlob.arrayBuffer();
-      const bytes = new Uint8Array(buffer);
-      let binary = "";
-      for (let i = 0; i < bytes.byteLength; i++) {
-        binary += String.fromCharCode(bytes[i]);
-      }
-      const audioBase64 = btoa(binary);
-
-      const res = await fetch(getApiEndpoint("/recording/transcribe"), {
-        method: "POST",
-        headers: this.getAuthHeaders({ "Content-Type": "application/json" }),
-        body: JSON.stringify({
-          audioBase64,
-          mimeType: params.audioBlob.type || "audio/webm",
-          meetingId: params.meetingId,
-          knownAttendees: params.knownAttendees,
-        }),
-      });
-
-      if (!res.ok) return null;
-      const json = await res.json();
-      if (json.success && json.data) {
-        return json.data;
-      }
-    } catch (e) {
-      console.warn("[ApiClient] Live audio transcription error:", e);
+    // Failures THROW (with the server's reason) instead of returning
+    // null: a null used to be indistinguishable from "Deepgram found
+    // nothing", so real errors silently degraded to browser captions.
+    // The one caller (useMeetRecord) catches and surfaces the message.
+    const available = await this.checkAvailability();
+    if (!available) {
+      throw new Error("Transcription backend is unavailable.");
     }
-    return null;
+
+    const buffer = await params.audioBlob.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    const audioBase64 = btoa(binary);
+
+    const res = await fetch(getApiEndpoint("/recording/transcribe"), {
+      method: "POST",
+      headers: this.getAuthHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        audioBase64,
+        mimeType: params.audioBlob.type || "audio/webm",
+        meetingId: params.meetingId,
+        knownAttendees: params.knownAttendees,
+      }),
+    });
+
+    if (!res.ok) {
+      let serverError = "";
+      try {
+        const errJson = await res.json();
+        serverError = errJson?.error || "";
+      } catch {
+        // non-JSON error body; fall through to the status message
+      }
+      throw new Error(serverError || `Transcription request failed (HTTP ${res.status}).`);
+    }
+    const json = await res.json();
+    if (json.success && json.data) {
+      return json.data;
+    }
+    throw new Error(json?.error || "Transcription returned no result.");
   }
 
   /**
