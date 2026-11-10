@@ -68,6 +68,33 @@ export interface AIAnalysisResult {
  * "share" inside "shared workspace" created phantom tasks with invented
  * due dates in the 2026-10-23 live run.
  */
+/**
+ * Meta-announcement lines (mirrors the client summarizer, 2026-11-10):
+ * speech ABOUT an item rather than the item itself ("The decision is
+ * this.", "There's one more open question."). Announcements are
+ * pointers, never items: decisions take the NEXT segment as content;
+ * question announcements are not questions; a topic-free confirmation
+ * check ("Is it confirmed?") folds into the question it checks, and a
+ * bare tag check ("Right?") is never a parking-lot question.
+ */
+const DECISION_ANNOUNCEMENT =
+  /^(so,?\s*)?(the|this is the|our)\s+decision\s+is\s+(this|as follows|the following)\s*[.:]?\s*$/i;
+const QUESTION_ANNOUNCEMENT =
+  /^(there('s| is)|we have|i have|one more|another)\b[^?]*\bquestions?\s*[.:]?\s*$/i;
+const CONFIRMATION_CHECK =
+  /^(is|was|has|have|isn't|wasn't|aren't)\s+(it|that|this)\s+(confirmed|final|decided|approved|done|sorted|clear)\s*\??\s*$/i;
+const TAG_QUESTION =
+  /^(right|okay|ok|yeah|yes|correct|exactly|agreed|makes sense|sound good|fair enough)\s*\??\s*$/i;
+
+function isDecisionAnnouncement(text: string): boolean {
+  const t = text.trim();
+  return DECISION_ANNOUNCEMENT.test(t) || /^decision\s*[:.]\s*$/i.test(t);
+}
+
+function isQuestionAnnouncement(text: string): boolean {
+  return QUESTION_ANNOUNCEMENT.test(text.trim());
+}
+
 function hasActionCommitment(text: string): boolean {
   const t = text.trim();
   if (/\b(i|we|you|he|she|they)\s+will\b/i.test(t)) return true;
@@ -93,6 +120,16 @@ function hasActionCommitment(text: string): boolean {
   }
   if (/^[A-Z][a-z]+(?:\s[A-Z][a-z]+)?\s+will\b/.test(t)) return true;
   if (/^(?:[A-Z][A-Za-z\s]{0,30},\s*)?(can you|could you|will you|please)\b/i.test(t)) return true;
+  // Vocative imperative: "Deepak, book the usability lab for
+  // November 14." — named addressee + imperative verb (mirrors the
+  // client; the shape matched no pattern and the task vanished,
+  // 2026-11-10).
+  if (
+    /^[A-Z][a-z]+(?:\s[A-Z][a-z]+)?,\s+(please\s+)?(send|share|prepare|create|update|review|schedule|assign|fix|test|draft|write|build|ship|resolve|finish|complete|confirm|check|book|arrange|call|email|ping|set up|follow up)\b/i.test(t) &&
+    !t.includes("?")
+  ) {
+    return true;
+  }
   if (
     /^(please\s+)?(send|share|prepare|create|update|review|schedule|assign|fix|test|draft|write|set up|follow up|check)\b/i.test(t) &&
     !t.includes("?")
@@ -596,7 +633,31 @@ export class SummaryService {
       "conclusion that",
     ];
 
-    segments.forEach((seg, idx) => {
+    const consumedSegments = new Set<number>();
+    segments.forEach((seg0, idx0) => {
+      if (consumedSegments.has(idx0)) return;
+      let seg = seg0;
+      let idx = idx0;
+      let announced = false;
+      // Announcement pointer (mirrors the client, 2026-11-10): "The
+      // decision is this." — the decision is the NEXT segment, which
+      // usually carries no decision keyword of its own.
+      if (isDecisionAnnouncement(seg0.text)) {
+        const content = segments[idx0 + 1];
+        if (
+          content === undefined ||
+          isDecisionAnnouncement(content.text) ||
+          classifySegment(content.text) === "question" ||
+          classifySegment(content.text) === "rationale"
+        ) {
+          return;
+        }
+        seg = content;
+        idx = idx0 + 1;
+        announced = true;
+        consumedSegments.add(idx);
+      }
+
       const lower = seg.text.toLowerCase();
       // Phrase keywords match as substrings; single words must match on
       // word boundaries so unrelated words cannot manufacture decisions.
@@ -607,7 +668,7 @@ export class SummaryService {
       // decision of this meeting.
       // A negated status ("Not approved yet.") is not a decision either.
       const isLiveDecision =
-        hasDecision &&
+        (hasDecision || announced) &&
         !isHistoricalDecision(seg.text) &&
         !/\b(not|never|no)\s+(confirmed|decided|agreed|approved|finalized|finalised)\b/i.test(seg.text);
 
@@ -673,7 +734,7 @@ export class SummaryService {
         // segment speaker does.
         let assignee = seg.speaker;
         const nameWillMatch = seg.text.match(/^([A-Z][a-z]+(?: [A-Z][a-z]+)?)\s+will\s+/i);
-        const directMention = seg.text.match(/^([A-Z][a-z]+(?: [A-Z][a-z]+)?),\s*(?:can you|could you|please|will you)/i);
+        const directMention = seg.text.match(/^([A-Z][a-z]+(?: [A-Z][a-z]+)?),\s*(?:can you|could you|please|will you|(?:please\s+)?(?:send|share|prepare|create|update|review|schedule|assign|fix|test|draft|write|build|ship|resolve|finish|complete|confirm|check|book|arrange|call|email|ping|set up|follow up)\b)/i);
         // A captured first name resolves to the full roster name when
         // it uniquely matches a speaker; non-person openers keep the
         // segment speaker (see resolveRosterAssignee).
@@ -746,6 +807,16 @@ export class SummaryService {
       /\b(leaving open|left open|open question|parking lot|not sure|depends on|need to figure out|unresolved)\b/i;
     const questionCandidates: Array<{ idx: number; parked: boolean }> = [];
     segments.forEach((seg, idx) => {
+      // Announcements, folded confirmation checks and bare tag checks
+      // are not questions (mirrors the client, 2026-11-10).
+      if (isQuestionAnnouncement(seg.text)) return;
+      if (
+        CONFIRMATION_CHECK.test(seg.text.trim()) &&
+        questionCandidates.some((c) => c.idx === idx - 1)
+      ) {
+        return;
+      }
+      if (TAG_QUESTION.test(seg.text.trim())) return;
       const lower = seg.text.toLowerCase();
       const isQuestionOrPending =
         classifySegment(seg.text) === "question" ||
@@ -779,6 +850,23 @@ export class SummaryService {
       if (NON_ANSWER.test(next.text)) {
         return true;
       }
+      // A completion report answers the question it follows, including
+      // across a one-line follow-up question (mirrors the client,
+      // 2026-11-10).
+      const COMPLETION =
+        /\b(shipped|done|finished|completed|sent|resolved|fixed|delivered)\b/i;
+      const answerAt = (j: number) => {
+        const l = segments[j];
+        return (
+          l !== undefined &&
+          l.text.trim().length > 10 &&
+          classifySegment(l.text) !== "question" &&
+          !NON_ANSWER.test(l.text) &&
+          COMPLETION.test(l.text)
+        );
+      };
+      if (answerAt(idx + 1)) return false;
+      if (questionCandidateIdx.has(idx + 1) && answerAt(idx + 2)) return false;
       if (next.speaker === thisSpeaker) {
         // Same-speaker continuation keeps the question live, except
         // when the speaker answers it themselves with an explicit

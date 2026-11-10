@@ -8,7 +8,7 @@ import { ActionItemsMatrix } from "./ActionItemsMatrix";
 import { QuestionsParkingLot } from "./QuestionsParkingLot";
 import { RefinementChips } from "./RefinementChips";
 import { ShieldCheck, Sparkles, Layers } from "lucide-react";
-import { GenerativeSummarizer } from "../../../lib/llmSummarizer";
+
 
 interface AIOutputCanvasProps {
   meeting: MeetingNote;
@@ -31,38 +31,37 @@ export const AIOutputCanvas: React.FC<AIOutputCanvasProps> = ({
   onToggleSourceDrawer,
   isSourceDrawerOpen = false,
 }) => {
-  // Grounding labels are derived from the actual analysis, never static:
-  // the share of emitted citations that resolve to their source decides
-  // what the header may claim, and the summarizer's computed
-  // modelConfidence decides the accuracy wording in the footer.
-  // Resolution is anchor-aware (GenerativeSummarizer.isCitationGrounded):
-  // time-anchored citations resolve by real timestamp, line-anchored
-  // citations (manual notes — no time domain) resolve by source line, so
-  // a fully line-grounded manual note reads "100% Grounded in Source
-  // Lines", not "0% Grounded" merely for lacking timestamps.
+  // Grounding labels are derived from the actual analysis, never
+  // static: the summarizer's modelConfidence — the source-verified
+  // share of emitted citations that resolve to their source — drives
+  // BOTH the header claim and the footer accuracy wording, so the two
+  // can never contradict each other on the same note.
   const allCitations = [
     ...analysis.decisions.map((d) => d.citation),
     ...analysis.actionItems.map((a) => a.citation),
     ...analysis.unresolvedQuestions.map((q) => q.citation),
     ...(analysis.importantDiscussionPoints || []).map((p) => p.citation),
   ].filter(Boolean) as SourceCitation[];
-  const groundedCount = allCitations.filter((c) =>
-    GenerativeSummarizer.isCitationGrounded(c)
-  ).length;
-  const groundedShare =
-    allCitations.length > 0 ? groundedCount / allCitations.length : 0;
   const allLineAnchored =
     allCitations.length > 0 &&
     allCitations.every(
       (c) => c.anchorKind === "line" || (!c.timestamp && typeof c.lineIndex === "number")
     );
   const groundingNoun = allLineAnchored ? "Source Lines" : "Transcript";
+  // ONE grounding measure drives both labels. The header used to
+  // recompute a share locally (without source lines, so line-anchored
+  // citations counted as grounded on existence alone) while the footer
+  // used the summarizer's source-verified modelConfidence — the same
+  // note could claim "100% Grounded" in the header and "Moderate
+  // Accuracy — Check Citations" in the footer (live find, 2026-11-10).
   const groundingLabel =
     allCitations.length === 0
       ? "No citations available"
-      : groundedShare >= 1
+      : analysis.modelConfidence === "high"
         ? `100% Grounded in ${groundingNoun}`
-        : `${Math.round(groundedShare * 100)}% Grounded in ${groundingNoun}`;
+        : analysis.modelConfidence === "moderate"
+          ? `Partially Grounded in ${groundingNoun} — Check Citations`
+          : `Weakly Grounded in ${groundingNoun} — Verify Against Transcript`;
   const accuracyLabel =
     analysis.modelConfidence === "high"
       ? "Extracted with Source Grounding • High Accuracy"

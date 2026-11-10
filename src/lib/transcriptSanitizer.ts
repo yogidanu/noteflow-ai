@@ -10,6 +10,17 @@ export interface SanitizedResult {
     text: string;
     originalIndex: number;
     /**
+     * This line's position (0-based) within the sanitized line list —
+     * the same list serialized into cleanText and numbered (1-based) by
+     * the source drawer. Citations must reference THIS position:
+     * originalIndex counts raw input lines, so whenever a recognizer
+     * returns multi-sentence utterances (split into several sanitized
+     * lines here), originalIndex drifts progressively behind the
+     * displayed numbering (live find, 2026-11-10: badges read up to 3
+     * lines lower than the panel for the same sentence).
+     */
+    lineIndex: number;
+    /**
      * Grounding anchor for citations built on this line. "time" when the
      * line's timestamp was parsed from actual time syntax in the source
      * (recorder "[MM:SS]", "[MM:SS] Speaker:", VTT/SRT cue times) — the
@@ -175,6 +186,7 @@ export function sanitizeTranscript(raw: string): SanitizedResult {
     timestamp?: string;
     text: string;
     originalIndex: number;
+    lineIndex: number;
     anchorKind: "time" | "line";
   }> = [];
 
@@ -271,6 +283,7 @@ export function sanitizeTranscript(raw: string): SanitizedResult {
           timestamp: lineAnchorKind === "time" ? currentTimestamp : undefined,
           text: sentence,
           originalIndex: i,
+          lineIndex: parsedLines.length,
           anchorKind: lineAnchorKind
         });
       }
