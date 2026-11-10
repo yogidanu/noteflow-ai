@@ -47,20 +47,33 @@ export class GenerativeSummarizer {
     const wordCount = sanitized.cleanText.split(/\s+/).filter(Boolean).length;
     const durationMinutes = Math.max(1, Math.round(wordCount / 120));
 
-    // 1. Synthesize Professional Executive Summary
-    const executiveSummary = this.buildExecutiveSummary(rawLines, speakers, refinement);
-
-    // 2. Synthesize Professional Key Decisions
+    // 1. Synthesize Professional Key Decisions
     const decisions = this.buildKeyDecisions(rawSources, rawLines, refinement);
 
-    // 3. Synthesize Action Items & Deliverables
+    // 2. Synthesize Action Items & Deliverables
     const actionItems = this.buildActionItems(rawSources, rawLines, speakers, refinement);
 
-    // 4. Synthesize Parking Lot & Unresolved Questions
+    // 3. Synthesize Parking Lot & Unresolved Questions
     const unresolvedQuestions = this.buildParkingLotQuestions(rawSources, rawLines);
 
-    // 5. Synthesize Key Discussion Points
+    // 4. Synthesize Key Discussion Points
     const importantDiscussionPoints = this.buildDiscussionTopics(rawSources, rawLines);
+
+    // 5. Synthesize Professional Executive Summary — from the extracted
+    // items, not from the transcript's opening lines. The old builder
+    // took lines 1–3 verbatim, so the "Key Highlights" of the
+    // 2026-11-10 live run were the greeting, the agenda line and the
+    // first question, and none of the meeting's substance.
+    const executiveSummary = this.buildExecutiveSummary(
+      rawLines,
+      speakers,
+      refinement,
+      [
+        ...decisions.map((d) => d.text),
+        ...actionItems.map((a) => a.task),
+        ...unresolvedQuestions.map((q) => q.question),
+      ]
+    );
 
     // 6. Grounding is measured, not asserted: confidence reflects the share
     // of emitted citations that resolve to their source — by timestamp for
@@ -118,6 +131,22 @@ export class GenerativeSummarizer {
     let decisionTitle: string | undefined;
     let firstThemeTitle: string | undefined;
 
+    // A spoken topic announcement outranks every derived candidate:
+    // its keywords ARE the meeting's subject ("Quick sync on the
+    // mobile app redesign." → "Mobile App Redesign"). The phrase is
+    // validated by topicPhraseTitle's own shape rules, so it does not
+    // go through validMeetingTitle — that guard rejects any candidate
+    // contained in a source line, which is precisely where topic
+    // keywords live (2026-11-10 title bug: "Key decision" won because
+    // it was the only candidate NOT drawn from the transcript).
+    for (const clean of cleanLines) {
+      const phrase = this.topicPhraseTitle(clean);
+      if (phrase) {
+        contextTitle = phrase;
+        break;
+      }
+    }
+
     cleanLines.forEach((clean, idx) => {
       if (clean.length <= 3) return;
       const kind = this.topicKind(clean);
@@ -174,7 +203,18 @@ export class GenerativeSummarizer {
     const titleLower = title.toLowerCase();
     const reproducesSource = cleanLines.some((clean) => {
       const cleanLower = clean.toLowerCase();
-      return titleLower === cleanLower || cleanLower.includes(titleLower);
+      if (titleLower === cleanLower) return true;
+      if (!cleanLower.includes(titleLower)) return false;
+      // Contained in a source line is only a quotation when the
+      // candidate reproduces MOST of that line. A short keyword phrase
+      // abstracted from a longer line ("Mobile App Redesign" from
+      // "Quick sync on the mobile app redesign.") is a title, not a
+      // quote — the old any-containment rule rejected every natural
+      // topic title and left generic category labels as the only
+      // survivors (2026-11-10).
+      const titleWords = titleLower.split(/\s+/).length;
+      const lineWords = cleanLower.split(/\s+/).length;
+      return titleWords >= Math.max(3, Math.ceil(lineWords * 0.75));
     });
     return reproducesSource ? undefined : title;
   }
@@ -208,7 +248,9 @@ export class GenerativeSummarizer {
         return false;
       }
       if (!sources) return true;
-      const source = sources.find((l) => l.originalIndex === citation.lineIndex);
+      const source = sources.find(
+        (l) => l.lineIndex === citation.lineIndex || l.originalIndex === citation.lineIndex
+      );
       return Boolean(source) && source!.text.trim() === citation.rawText.trim();
     }
     return Boolean(citation.timestamp) && citation.timestamp !== "00:00";
@@ -261,7 +303,11 @@ export class GenerativeSummarizer {
       timestamp: anchorKind === "time" ? sourceLine?.timestamp : undefined,
       anchorKind,
       rawText,
-      lineIndex: sourceLine?.originalIndex ?? fallbackIndex,
+      // The SANITIZED position — the number the source drawer displays.
+      // originalIndex (raw-line position) drifts behind it whenever a
+      // recognizer utterance splits into several sanitized lines
+      // (live find, 2026-11-10).
+      lineIndex: sourceLine?.lineIndex ?? sourceLine?.originalIndex ?? fallbackIndex,
     };
   }
 
@@ -298,6 +344,86 @@ export class GenerativeSummarizer {
       return "context";
     }
     return "other";
+  }
+
+  /**
+   * Meta-announcement lines: speech ABOUT an item rather than the item
+   * itself ("The decision is this.", "There's one more open question.").
+   * Recognizers end the announcement with terminal punctuation and the
+   * fragment merge pass (correctly) refuses to join across a full stop,
+   * so announcement and content stay on separate lines — and a
+   * line-at-a-time extractor harvests the announcement AS the item,
+   * orphaning the content (live find, 2026-11-10: the Decision Log held
+   * "Agreed to the decision is this" instead of the waitlist decision,
+   * and the parking lot counted the question announcement itself).
+   * Builders treat an announcement as a pointer, never an item:
+   * decisions take the NEXT line as their content; question
+   * announcements are simply not questions.
+   */
+  private static readonly DECISION_ANNOUNCEMENT =
+    /^(so,?\s*)?(the|this is the|our)\s+decision\s+is\s+(this|as follows|the following)\s*[.:]?\s*$/i;
+  private static readonly QUESTION_ANNOUNCEMENT =
+    /^(there('s| is)|we have|i have|one more|another)\b[^?]*\bquestions?\s*[.:]?\s*$/i;
+  /**
+   * A topic-free confirmation check on the immediately preceding
+   * question ("Is it confirmed?" after "Is the lab available?"). It has
+   * no subject of its own — nobody can act on it alone — so as its own
+   * parking-lot card it double-counts the parent question.
+   */
+  private static readonly CONFIRMATION_CHECK =
+    /^(is|was|has|have|isn't|wasn't|aren't)\s+(it|that|this)\s+(confirmed|final|decided|approved|done|sorted|clear)\s*\??\s*$/i;
+
+  /**
+   * A spoken topic announcement: "Quick sync on the mobile app
+   * redesign.", "This meeting is about the pricing review." The topic
+   * KEYWORDS after on/about/for are the meeting's actual subject — the
+   * natural title — and are extracted as a short phrase, title-cased
+   * (user direction, 2026-11-10: take the keywords, "mobile" and
+   * "design", and title the meeting properly).
+   */
+  private static readonly TOPIC_PHRASE =
+    /\b(?:sync|meeting|discussion|session|call|check-?in|update|review)\b[^.]*?\b(?:on|about|regarding|for)\s+(?:the\s+)?([a-z][a-z0-9\s-]{2,60}?)\s*(?:\.|$)/i;
+
+  private static topicPhraseTitle(text: string): string | undefined {
+    // The established context shape — a check-in line naming its object
+    // with "for the …" — already gets a richer title from the context
+    // branch ("… — planning check-in"); the keyword phrase must not
+    // pre-empt it (smart-meeting-title suite).
+    if (/\bcheck[-\s]?in\b/i.test(text) && /\bfor\s+the\b/i.test(text)) {
+      return undefined;
+    }
+    const m = text.match(this.TOPIC_PHRASE);
+    if (!m) return undefined;
+    const phrase = m[1].trim();
+    if (/\b(if|when|because|whether)\b/i.test(phrase)) return undefined;
+    const words = phrase.split(/\s+/).filter(Boolean);
+    if (words.length < 2 || words.length > 7) return undefined;
+    if (/^(me|us|you|him|her|them|it|this|that)\b/i.test(phrase)) return undefined;
+    const SMALL = new Set(["on", "of", "the", "a", "an", "for", "and", "to", "in", "with"]);
+    return words
+      .map((w, i) =>
+        i > 0 && SMALL.has(w.toLowerCase())
+          ? w.toLowerCase()
+          : w.charAt(0).toUpperCase() + w.slice(1)
+      )
+      .join(" ");
+  }
+
+  /**
+   * Greetings, acknowledgements and closers — meeting furniture, not
+   * content. Used with a short word count: a substantive line that
+   * happens to open with "thanks" is untouched.
+   */
+  private static readonly FILLER_OPENER =
+    /^(thanks|thank you|hello|hi|hey|welcome|good (morning|afternoon|evening)|bye|okay|ok|right|great|perfect|awesome|cool|that's (great|all|it))\b/i;
+
+  private static isDecisionAnnouncement(text: string): boolean {
+    const t = text.trim();
+    return this.DECISION_ANNOUNCEMENT.test(t) || /^decision\s*[:.]\s*$/i.test(t);
+  }
+
+  private static isQuestionAnnouncement(text: string): boolean {
+    return this.QUESTION_ANNOUNCEMENT.test(text.trim());
   }
 
   /**
@@ -339,6 +465,18 @@ export class GenerativeSummarizer {
     }
     if (/^[A-Z][a-z]+(?:\s[A-Z][a-z]+)?\s+will\b/.test(t)) return true;
     if (/^(?:[A-Z][A-Za-z\s]{0,30},\s*)?(can you|could you|will you|please)\b/i.test(t)) return true;
+    // Vocative imperative: "Deepak, book the usability lab for
+    // November 14." — a named addressee followed directly by an
+    // imperative verb is a direct assignment. It matched NO pattern
+    // before (the verb list only applied at line start, and "book" was
+    // missing there), so the task silently vanished (live find,
+    // 2026-11-10).
+    if (
+      /^[A-Z][a-z]+(?:\s[A-Z][a-z]+)?,\s+(please\s+)?(send|share|prepare|create|update|review|schedule|assign|fix|test|draft|write|build|ship|resolve|finish|complete|confirm|check|book|arrange|call|email|ping|set up|follow up)\b/i.test(t) &&
+      !t.includes("?")
+    ) {
+      return true;
+    }
     if (
       /^(please\s+)?(send|share|prepare|create|update|review|schedule|assign|fix|test|draft|write|set up|follow up|check)\b/i.test(t) &&
       !t.includes("?")
@@ -364,14 +502,26 @@ export class GenerativeSummarizer {
   private static buildExecutiveSummary(
     lines: string[],
     speakers: string[],
-    refinement: RefinementPromptType
+    refinement: RefinementPromptType,
+    highlights: string[] = []
   ): string {
     const speakerLabel = speakers.length > 1 ? speakers.join(" and ") : speakers[0];
 
-    // Filter and clean dialogue sentences into core themes
-    const coreIdeas = lines
+    // Highlights come from the extracted items when the meeting
+    // produced any. The fallback — transcripts with no extractable
+    // items — uses substantive lines only: no greetings, no
+    // announcements, no fragments.
+    const fallbackIdeas = lines
       .map((l) => this.cleanDialogue(l))
-      .filter((t) => t.length > 10);
+      .filter(
+        (t) =>
+          t.length > 10 &&
+          t.split(/\s+/).length >= 5 &&
+          !this.isDecisionAnnouncement(t) &&
+          !this.isQuestionAnnouncement(t) &&
+          !(this.FILLER_OPENER.test(t) && t.split(/\s+/).length <= 6)
+      );
+    const coreIdeas = highlights.length > 0 ? highlights : fallbackIdeas;
 
     const primaryTopics = coreIdeas.slice(0, 3).map((idea) => this.toProfessionalBullet(idea));
 
@@ -530,10 +680,38 @@ export class GenerativeSummarizer {
       sourceIndex: number;
     }> = [];
 
-    lines.forEach((line, idx) => {
+    const consumed = new Set<number>();
+    lines.forEach((rawLine, rawIdx) => {
+      if (consumed.has(rawIdx)) return;
+      let line = rawLine;
+      let idx = rawIdx;
+      // Announcement pointer: "The decision is this." carries no content
+      // of its own — the decision is the NEXT line. Emit that line as
+      // the decision and consume it, so the announcement never enters
+      // the log and its content is never orphaned (2026-11-10).
+      if (this.isDecisionAnnouncement(rawLine)) {
+        const contentIdx = rawIdx + 1;
+        const content = lines[contentIdx];
+        if (
+          content === undefined ||
+          this.isDecisionAnnouncement(content) ||
+          this.classifyLine(content) === "question" ||
+          this.classifyLine(content) === "rationale"
+        ) {
+          return;
+        }
+        line = content;
+        idx = contentIdx;
+        consumed.add(contentIdx);
+      }
+
       // Word-boundary matching only — substring hits inside unrelated
-      // words must not manufacture decisions.
+      // words must not manufacture decisions. A line absorbed via an
+      // announcement IS a decision by declaration: its own wording
+      // ("We open the waitlist on December 1.") carries no decision
+      // keyword, which is exactly why the announcement exists.
       const isDecision =
+        idx !== rawIdx ||
         this.classifyLine(line) === "decision" ||
         /\b(go with|plan is|launch date|target date)\b/i.test(line);
 
@@ -689,6 +867,29 @@ export class GenerativeSummarizer {
 
     const candidates: Array<{ idx: number; parked: boolean }> = [];
     lines.forEach((line, idx) => {
+      // A question ANNOUNCEMENT ("There's one more open question.") is
+      // not a question — it's the label for the next line, which is
+      // collected on its own (2026-11-10).
+      if (this.isQuestionAnnouncement(line)) return;
+      // A topic-free confirmation check folds into the question it
+      // checks: when the previous line is already a candidate, "Is it
+      // confirmed?" gets no card of its own (2026-11-10).
+      if (
+        this.CONFIRMATION_CHECK.test(line.trim()) &&
+        candidates.some((c) => c.idx === idx - 1)
+      ) {
+        return;
+      }
+      // A bare tag check ("Right?", "Okay?", "Makes sense?") seeks
+      // acknowledgement, not an answer — it carries no subject anyone
+      // could act on, so it is never a parking-lot question.
+      if (
+        /^(right|okay|ok|yeah|yes|correct|exactly|agreed|makes sense|sound good|fair enough)\s*\??\s*$/i.test(
+          line.trim()
+        )
+      ) {
+        return;
+      }
       const isQuestion =
         this.classifyLine(line) === "question" ||
         // Single source of truth: anything the parked-marker list can
@@ -734,6 +935,27 @@ export class GenerativeSummarizer {
       if (NON_ANSWER.test(lines[nextIdx])) {
         return true;
       }
+      // A completion report ("Oh, those shipped last week.") ANSWERS
+      // the question it follows — including when a one-line follow-up
+      // question sits between them ("What about the checkout screens?"
+      // / "Are they done?" / "Oh, those shipped last week." is one
+      // answered exchange, listed as unresolved in the 2026-11-10 live
+      // run). Same-speaker answers were the gap: the branches below
+      // only catch different-speaker answers and affirmation openers.
+      const COMPLETION =
+        /\b(shipped|done|finished|completed|sent|resolved|fixed|delivered)\b/i;
+      const answerAt = (j: number) => {
+        const l = lines[j];
+        return (
+          l !== undefined &&
+          l.trim().length > 10 &&
+          this.classifyLine(l) !== "question" &&
+          !NON_ANSWER.test(l) &&
+          COMPLETION.test(l)
+        );
+      };
+      if (answerAt(nextIdx)) return false;
+      if (candidateIdx.has(nextIdx) && answerAt(nextIdx + 1)) return false;
       if (nextSpeaker === thisSpeaker) {
         // Same-speaker continuation normally keeps the question live —
         // EXCEPT when the speaker answers it themselves in the next
@@ -816,20 +1038,63 @@ export class GenerativeSummarizer {
    * whatever it was, to a "topic".
    */
   private static buildDiscussionTopics(sources: SanitizedResult["lines"], lines: string[]) {
+    const entries = lines
+      .map((line, idx) => {
+        const clean = this.cleanDialogue(line);
+        // The line an announcement POINTS at carries the announcement's
+        // kind: "We open the waitlist…" follows "The decision is this."
+        // and is the decision theme, whatever its own wording classifies
+        // as (2026-11-10).
+        let kind = this.topicKind(clean);
+        if (
+          kind === "other" &&
+          idx > 0 &&
+          this.isDecisionAnnouncement(lines[idx - 1])
+        ) {
+          kind = "decision";
+        }
+        return { line, idx, clean, kind };
+      })
+      .filter(({ line, clean, kind }) => {
+        if (clean.length <= 3) return false;
+        // Announcements are labels for the next line, never topics.
+        if (this.isDecisionAnnouncement(line) || this.isQuestionAnnouncement(line)) return false;
+        // A topic-free confirmation check is part of its parent topic.
+        if (this.CONFIRMATION_CHECK.test(clean)) return false;
+        if (
+          kind === "other" &&
+          this.FILLER_OPENER.test(clean) &&
+          clean.split(/\s+/).length <= 6
+        ) {
+          return false;
+        }
+        return true;
+      });
+
     const seenKinds = new Set<string>();
     const topics: DiscussionPoint[] = [];
-
-    lines.forEach((line, idx) => {
-      if (topics.length >= 5) return;
-      const clean = this.cleanDialogue(line);
-      if (clean.length <= 3) return;
-      const kind = this.topicKind(clean);
-      if (kind !== "other") {
-        if (seenKinds.has(kind)) return;
-        seenKinds.add(kind);
+    const pushTopic = (e: (typeof entries)[number]) => {
+      if (e.kind !== "other") {
+        if (seenKinds.has(e.kind)) return;
+        seenKinds.add(e.kind);
       }
-      topics.push(this.buildDiscussionTopic(sources, idx, line, clean, kind));
+      topics.push(this.buildDiscussionTopic(sources, e.idx, e.line, e.clean, e.kind));
+    };
+
+    // Pass 1: one topic per classified theme, in source order — a theme
+    // raised late in the meeting must not lose its slot to whatever was
+    // said in the first minute.
+    entries.filter((e) => e.kind !== "other").forEach((e) => {
+      if (topics.length < 5) pushTopic(e);
     });
+    // Pass 2: substantive unclassified lines fill the remaining slots.
+    // A five-word fragment ("Let's not revisit that today.") is a
+    // continuation of the previous topic, not a topic of its own.
+    entries
+      .filter((e) => e.kind === "other" && e.clean.split(/\s+/).length >= 6)
+      .forEach((e) => {
+        if (topics.length < 5) pushTopic(e);
+      });
 
     return topics;
   }
@@ -914,6 +1179,14 @@ export class GenerativeSummarizer {
     const capWords = (s: string, n: number) =>
       s.split(/\s+/).filter(Boolean).slice(0, n).join(" ");
 
+    // A topic announcement's keywords title the topic directly
+    // ("Quick sync on the mobile app redesign." → "Mobile App
+    // Redesign"), whatever the line classified as.
+    if (kind === "context" || kind === "other") {
+      const phrase = this.topicPhraseTitle(clean);
+      if (phrase) return phrase;
+    }
+
     switch (kind) {
       case "context": {
         const forMatch = clean.match(/\bfor\s+(?:the\s+)?(.+?)(?:\.|$)/i);
@@ -934,6 +1207,7 @@ export class GenerativeSummarizer {
             /^(we have decided to|we decided to|we have agreed to|we agreed to|we decided|we agreed|i decided|decision reached:?|decision:?|let's|we should)\s*/i,
             ""
           )
+          .replace(/^(we|i)\s+/i, "")
           .trim();
         if (!rest) return this.categoryTitle(kind);
         if (/\bwaitlist\b/i.test(rest) && /\blaunch\b/i.test(rest)) {
@@ -1033,6 +1307,10 @@ export class GenerativeSummarizer {
   private static toProfessionalDecision(text: string): string {
     const clean = text
       .replace(/^(we have decided to|we decided to|we agreed to|we have agreed to|i decided|we should|let's)\s*/i, "")
+      // A bare subject ("We open the waitlist…") — the standard shape of
+      // an announcement's content line — reads as a fragment after
+      // "Agreed to" unless the subject is dropped too.
+      .replace(/^(we|i)\s+/i, "")
       .trim();
     if (!clean) return "Confirmed direction for milestone deliverables.";
     return `Agreed to ${clean.charAt(0).toLowerCase() + clean.slice(1)}`;
@@ -1290,7 +1568,7 @@ export class GenerativeSummarizer {
       if (resolved) return resolved;
     }
     const directAddress = t.match(
-      /^([A-Z][a-z]+(?:\s[A-Z][a-z]+)?),\s*(?:can you|could you|will you|would you|please)\b/i
+      /^([A-Z][a-z]+(?:\s[A-Z][a-z]+)?),\s*(?:can you|could you|will you|would you|please\b|(?:please\s+)?(?:send|share|prepare|create|update|review|schedule|assign|fix|test|draft|write|build|ship|resolve|finish|complete|confirm|check|book|arrange|call|email|ping|set up|follow up)\b)/i
     );
     if (directAddress) {
       const resolved = this.resolveRosterName(directAddress[1], speakers);
