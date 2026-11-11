@@ -65,6 +65,47 @@ export function buildDeepgramParams(): URLSearchParams {
   return params;
 }
 
+export interface DeepgramStreamGrant {
+  accessToken: string;
+  expiresIn: number;
+}
+
+/**
+ * Mints a short-lived Deepgram access token for LIVE streaming from the
+ * browser (POST /v1/auth/grant). The real API key never leaves the
+ * server: the browser receives a scoped token (1 hour) and opens the
+ * streaming WebSocket with it. Throws a stable error code on any
+ * failure so the route can answer generically in production and the
+ * client can fall back to the batch/captions paths.
+ */
+export async function createDeepgramStreamGrant(
+  fetchImpl: typeof fetch = fetch
+): Promise<DeepgramStreamGrant> {
+  const deepgramKey = config.stt?.apiKey || process.env.DEEPGRAM_API_KEY;
+  if (!deepgramKey || deepgramKey.includes("sample")) {
+    throw new Error("DEEPGRAM_NOT_CONFIGURED");
+  }
+  const res = await fetchImpl("https://api.deepgram.com/v1/auth/grant", {
+    method: "POST",
+    headers: {
+      Authorization: `Token ${deepgramKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ ttl_seconds: 3600 }),
+  });
+  if (!res.ok) {
+    throw new Error(`DEEPGRAM_GRANT_FAILED_${res.status}`);
+  }
+  const data: any = await res.json().catch(() => null);
+  if (!data?.access_token) {
+    throw new Error("DEEPGRAM_GRANT_EMPTY");
+  }
+  return {
+    accessToken: data.access_token,
+    expiresIn: typeof data.expires_in === "number" ? data.expires_in : 3600,
+  };
+}
+
 export interface AudioValidationResult {
   isValid: boolean;
   format: string;

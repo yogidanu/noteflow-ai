@@ -5,6 +5,7 @@
  */
 
 import { mergeTranscriptSegments } from "./transcriptMerge";
+import { encodePcmFrame } from "./deepgramLive";
 
 export interface DiarizedSpeechSegment {
   speaker: string;
@@ -50,6 +51,14 @@ export class WebAudioRecorder {
   private onChunkRecorded?: (chunk: Blob) => void;
   private onLiveTranscriptChange?: (text: string) => void;
 
+  // Deepgram live streaming tap: raw PCM frames from the mic stream.
+  private pcmProcessor: ScriptProcessorNode | null = null;
+  private onPcmFrameCallback?: (frame: ArrayBuffer) => void;
+  // When a streaming session is live, its text owns the live view and
+  // Web Speech updates are suppressed (its segments still accumulate
+  // silently as the fallback transcript).
+  private webSpeechLiveSuppressed = false;
+
   /**
    * Checks if browser supports audio capture
    */
@@ -69,6 +78,8 @@ export class WebAudioRecorder {
     onDuration?: (duration: number) => void;
     onChunk?: (chunk: Blob) => void;
     onLiveTranscript?: (text: string) => void;
+    onPcmFrame?: (frame: ArrayBuffer) => void;
+    suppressWebSpeechLive?: boolean;
     speakerName?: string;
   }): Promise<boolean> {
     if (!WebAudioRecorder.isSupported()) {
@@ -80,6 +91,8 @@ export class WebAudioRecorder {
     this.onDurationChange = options?.onDuration;
     this.onChunkRecorded = options?.onChunk;
     this.onLiveTranscriptChange = options?.onLiveTranscript;
+    this.onPcmFrameCallback = options?.onPcmFrame;
+    this.webSpeechLiveSuppressed = Boolean(options?.suppressWebSpeechLive);
     this.audioChunks = [];
     this.recognizedSegments = [];
     this.currentUtterance = "";
@@ -108,6 +121,29 @@ export class WebAudioRecorder {
         this.analyser.fftSize = 256;
         this.analyser.smoothingTimeConstant = 0.8;
         source.connect(this.analyser);
+
+        // PCM tap for Deepgram live streaming: ~85ms frames of 16kHz
+        // mono PCM, tapped off the same mic stream. Runs only when a
+        // caller asked for frames; failure here must never break the
+        // recording itself.
+        if (this.onPcmFrameCallback && this.audioContext) {
+          try {
+            const ctxRate = this.audioContext.sampleRate;
+            this.pcmProcessor = this.audioContext.createScriptProcessor(4096, 1, 1);
+            this.pcmProcessor.onaudioprocess = (e) => {
+              if (!this.isRunning || this.isPaused) return;
+              const input = e.inputBuffer.getChannelData(0);
+              this.onPcmFrameCallback?.(encodePcmFrame(new Float32Array(input), ctxRate));
+            };
+            source.connect(this.pcmProcessor);
+            const mute = this.audioContext.createGain();
+            mute.gain.value = 0;
+            this.pcmProcessor.connect(mute);
+            mute.connect(this.audioContext.destination);
+          } catch {
+            this.pcmProcessor = null;
+          }
+        }
 
         this.startEqualizerLoop();
       }
@@ -179,13 +215,15 @@ export class WebAudioRecorder {
             this.currentUtterance = latestInterim.trim();
             this.fullTranscriptText = this.composeTranscriptText();
 
-            if (this.currentUtterance) {
-              const liveView = this.fullTranscriptText
-                ? `${this.fullTranscriptText}\n${activeSpeaker} (speaking...): ${this.currentUtterance}`
-                : `${activeSpeaker}: ${this.currentUtterance}`;
-              this.onLiveTranscriptChange?.(liveView);
-            } else {
-              this.onLiveTranscriptChange?.(this.fullTranscriptText);
+            if (!this.webSpeechLiveSuppressed) {
+              if (this.currentUtterance) {
+                const liveView = this.fullTranscriptText
+                  ? `${this.fullTranscriptText}\n${activeSpeaker} (speaking...): ${this.currentUtterance}`
+                  : `${activeSpeaker}: ${this.currentUtterance}`;
+                this.onLiveTranscriptChange?.(liveView);
+              } else {
+                this.onLiveTranscriptChange?.(this.fullTranscriptText);
+              }
             }
           };
 
@@ -242,6 +280,27 @@ export class WebAudioRecorder {
       console.warn("[WebAudioRecorder] Failed to initialize microphone capture:", err);
       this.cleanup();
       return false;
+    }
+  }
+
+  /**
+   * Pushes live text from an external transcription source (Deepgram
+   * streaming) into the same live-view channel Web Speech uses.
+   */
+  public pushExternalLiveText(text: string): void {
+    this.onLiveTranscriptChange?.(text);
+  }
+
+  /**
+   * Switches the live view between the streaming source (suppressed =
+   * Web Speech hidden) and Web Speech. Unsuppressing re-emits the
+   * current Web Speech text so the view resyncs immediately — used
+   * when a streaming session fails mid-recording.
+   */
+  public setWebSpeechLiveSuppressed(suppressed: boolean): void {
+    this.webSpeechLiveSuppressed = suppressed;
+    if (!suppressed) {
+      this.onLiveTranscriptChange?.(this.fullTranscriptText);
     }
   }
 
@@ -411,6 +470,17 @@ export class WebAudioRecorder {
       clearInterval(this.timerInterval);
       this.timerInterval = null;
     }
+
+    if (this.pcmProcessor) {
+      try {
+        this.pcmProcessor.disconnect();
+        this.pcmProcessor.onaudioprocess = null;
+      } catch {
+        // already disconnected
+      }
+      this.pcmProcessor = null;
+    }
+    this.onPcmFrameCallback = undefined;
 
     if (this.mediaStream) {
       this.mediaStream.getTracks().forEach((track) => track.stop());
