@@ -3,13 +3,18 @@
  * stops. Extracted from useMeetRecord.stopRecording as a pure helper so
  * the precedence is testable offline.
  *
- * Precedence (Deepgram-first, fixed 2026-10-23):
- *   1. Backend session transcript — returned by apiClient.stopRecording
+ * Precedence (Deepgram-first, fixed 2026-10-23; streaming added
+ * 2026-11-11):
+ *   1. Deepgram LIVE stream transcript — the streaming session that ran
+ *      during the recording (Nova-3 + keyterms, diarized, produced from
+ *      the actual mic audio in real time). It is the transcript the
+ *      speaker watched being written, so it wins when usable.
+ *   2. Backend session transcript — returned by apiClient.stopRecording
  *      when the recording session produced one server-side.
- *   2. Deepgram transcript — apiClient.transcribeAudio over the recorded
- *      audio blob (server/services/sttService.ts, Nova-3 + keyterm
- *      prompting for domain vocabulary).
- *   3. Browser Web Speech transcript — fallback only. Web Speech has no
+ *   3. Deepgram batch transcript — apiClient.transcribeAudio over the
+ *      recorded audio blob (server/services/sttService.ts, Nova-3 +
+ *      keyterm prompting for domain vocabulary).
+ *   4. Browser Web Speech transcript — fallback only. Web Speech has no
  *      custom-vocabulary support and produced endless homophones in live
  *      runs (waitlist → "weightlif"/"weightless", NoteFlow → "note to
  *      a"), so it must never win over a usable Deepgram result. It still
@@ -21,12 +26,13 @@
  * its last-resort fallback.
  */
 export interface FinalTranscriptCandidates {
+  liveStreamTranscript?: string | null;
   sessionTranscript?: string | null;
   deepgramTranscript?: string | null;
   webSpeechTranscript?: string | null;
 }
 
-export type FinalTranscriptSource = "session" | "deepgram" | "webspeech" | "none";
+export type FinalTranscriptSource = "deepgram-live" | "session" | "deepgram" | "webspeech" | "none";
 
 /**
  * Same precedence as resolveFinalTranscript, but also reports WHICH
@@ -37,6 +43,7 @@ export function resolveFinalTranscriptWithSource(
   candidates: FinalTranscriptCandidates
 ): { transcript: string; source: FinalTranscriptSource } {
   const ordered: Array<{ value?: string | null; source: FinalTranscriptSource }> = [
+    { value: candidates.liveStreamTranscript, source: "deepgram-live" },
     { value: candidates.sessionTranscript, source: "session" },
     { value: candidates.deepgramTranscript, source: "deepgram" },
     { value: candidates.webSpeechTranscript, source: "webspeech" },

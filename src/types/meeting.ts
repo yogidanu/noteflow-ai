@@ -127,7 +127,7 @@ export interface MeetingOrganizer {
  *  - "webspeech": browser live captions (fallback only)
  *  - "fallback": no usable transcript could be produced
  */
-export type TranscriptSourceType = "session" | "deepgram" | "webspeech" | "fallback";
+export type TranscriptSourceType = "deepgram-live" | "session" | "deepgram" | "webspeech" | "fallback";
 
 export interface DetectedMeeting {
   id: string;

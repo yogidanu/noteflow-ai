@@ -566,6 +566,34 @@ export class MeetRecordApiClient {
   /**
    * Sends audio blob to backend Speech-to-Text service for live transcription.
    */
+  /**
+   * Fetches a short-lived Deepgram grant token for LIVE streaming
+   * transcription. Returns null on any failure — callers treat null as
+   * "streaming unavailable" and fall back to batch transcription +
+   * browser captions; it is never an error worth surfacing mid-start.
+   */
+  public async getDeepgramStreamToken(): Promise<{ accessToken: string; expiresIn: number } | null> {
+    try {
+      const available = await this.checkAvailability();
+      if (!available) return null;
+      const res = await fetch(getApiEndpoint("/recording/stream-token"), {
+        method: "POST",
+        headers: this.getAuthHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) return null;
+      const payload = await res.json().catch(() => null);
+      const accessToken = payload?.data?.accessToken;
+      if (typeof accessToken !== "string" || !accessToken) return null;
+      return {
+        accessToken,
+        expiresIn: typeof payload?.data?.expiresIn === "number" ? payload.data.expiresIn : 3600,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   public async transcribeAudio(params: {
     audioBlob: Blob;
     meetingId?: string;

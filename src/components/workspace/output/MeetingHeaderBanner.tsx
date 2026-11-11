@@ -56,6 +56,14 @@ export const MeetingHeaderBanner: React.FC<MeetingHeaderBannerProps> = ({
               Deepgram transcript
             </span>
           )}
+          {meeting.transcriptSource === "deepgram-live" && (
+            <span
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--color-success)] bg-[var(--success-surface)] px-2.5 py-0.5 rounded-full border border-[var(--success-border)]"
+              title="Transcribed live by Deepgram streaming during the recording (Nova-3)"
+            >
+              Deepgram live transcript
+            </span>
+          )}
           {meeting.transcriptSource === "session" && (
             <span
               className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--color-success)] bg-[var(--success-surface)] px-2.5 py-0.5 rounded-full border border-[var(--success-border)]"

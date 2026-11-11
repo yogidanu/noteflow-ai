@@ -9,6 +9,7 @@ import {
 import { SAMPLE_1ON1_REORG_TRANSCRIPT, SAMPLE_ZOOM_TRANSCRIPT } from "../lib/sampleData";
 import { apiClient } from "../lib/apiClient";
 import { resolveFinalTranscriptWithSource } from "../lib/resolveFinalTranscript";
+import { DeepgramLiveSession } from "../lib/deepgramLive";
 import { webAudioRecorder } from "../lib/audioRecorder";
 import { desktopBridge } from "../lib/desktopBridge";
 import { MeetingDetectionStateType } from "../components/modals/MeetingDetectionSetupModal";
@@ -170,6 +171,8 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
   const [recordingSeconds, setRecordingSeconds] = useState<number>(0);
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [audioPowerLevel, setAudioPowerLevel] = useState<number>(0);
+  const [liveTranscript, setLiveTranscript] = useState<string>("");
+  const liveSessionRef = useRef<DeepgramLiveSession | null>(null);
 
   // Sync state changes to user-scoped storage
   useEffect(() => {
@@ -589,11 +592,52 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
         }
       }
 
+      // Deepgram LIVE streaming: mint a short-lived grant token and
+      // open the streaming socket BEFORE capture starts, so the first
+      // seconds of speech are transcribed too (the old Web Speech path
+      // routinely lost them while the recognizer spun up). Any failure
+      // here is non-fatal: liveSession stays null and the recording
+      // behaves exactly as before (Web Speech live captions + batch
+      // Deepgram after stop).
+      let liveSession: DeepgramLiveSession | null = null;
+      if (!isDemoMode) {
+        try {
+          const grant = await apiClient.getDeepgramStreamToken();
+          if (grant) {
+            const session = new DeepgramLiveSession(grant.accessToken, {
+              onLiveText: (text) => webAudioRecorder.pushExternalLiveText(text),
+              onError: (reason) => {
+                console.warn("[useMeetRecord] Live streaming unavailable, captions fallback:", reason);
+                webAudioRecorder.setWebSpeechLiveSuppressed(false);
+                if (liveSessionRef.current === session) {
+                  liveSessionRef.current = null;
+                }
+              },
+            });
+            if (await session.connect()) {
+              liveSession = session;
+            } else {
+              session.abort();
+            }
+          }
+        } catch (e) {
+          console.warn("[useMeetRecord] Live streaming setup fallback:", e);
+          liveSession = null;
+        }
+      }
+      liveSessionRef.current = liveSession;
+      setLiveTranscript("");
+
       // Start Web Audio Capture with live RMS equalizer and real-time chunk streaming
       try {
         await webAudioRecorder.start({
           onPowerLevel: (level) => setAudioPowerLevel(level),
           onDuration: (sec) => setRecordingSeconds(sec),
+          onLiveTranscript: (text) => setLiveTranscript(text),
+          onPcmFrame: liveSession
+            ? (frame) => liveSessionRef.current?.sendAudio(frame)
+            : undefined,
+          suppressWebSpeechLive: Boolean(liveSession),
           onChunk: (chunk) => {
             if (target?.dedupHash && !isDemoMode) {
               apiClient.sendAudioChunk(target.dedupHash, chunk);
@@ -602,6 +646,8 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
         });
         setRecordingLifecycleState("RECORDING");
       } catch (audioErr) {
+        liveSessionRef.current?.abort();
+        liveSessionRef.current = null;
         console.error("[useMeetRecord] Audio recording startup error:", audioErr);
         setRecordingLifecycleState("ERROR");
         setCalendarError("Microphone permission denied or audio device unavailable.");
@@ -645,6 +691,23 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
       const audioBlob = recordResult?.audioBlob;
       const liveSpeechTranscript = recordResult?.transcriptText || "";
 
+      // Close the Deepgram live stream and collect its transcript —
+      // the top-precedence final source when it produced text. The
+      // stream is closed AFTER the recorder stops so the last spoken
+      // words are captured in the final results.
+      const liveSession = liveSessionRef.current;
+      liveSessionRef.current = null;
+      let liveStreamTranscript = "";
+      if (liveSession) {
+        try {
+          const liveResult = await liveSession.finish();
+          liveStreamTranscript = liveResult.transcriptText || "";
+        } catch (e) {
+          console.warn("[useMeetRecord] Live stream finish fallback:", e);
+        }
+      }
+      setLiveTranscript("");
+
       if (target) {
         updateMeetingStatus(id, "transcribing");
         setRecordingLifecycleState("PROCESSING");
@@ -676,13 +739,16 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
             }
           }
 
-          // Deepgram-first: whenever the session produced no transcript
-          // and an audio blob exists, transcribe via the backend STT
-          // service (Deepgram Nova-3) — EVEN IF the browser Web Speech
-          // transcript is non-empty. Web Speech previously won by
-          // default and fed synthesis homophone-riddled text; it is now
-          // only the fallback when Deepgram yields nothing usable.
-          if (audioBlob && !sessionTranscript) {
+          // Deepgram-first: whenever neither the live stream nor the
+          // session produced a transcript and an audio blob exists,
+          // transcribe via the backend STT service (Deepgram Nova-3) —
+          // EVEN IF the browser Web Speech transcript is non-empty.
+          // Web Speech previously won by default and fed synthesis
+          // homophone-riddled text; it is now only the fallback when
+          // Deepgram yields nothing usable. Skipping the batch call
+          // when the live stream already produced the transcript also
+          // removes the post-stop transcription wait (and its cost).
+          if (audioBlob && !sessionTranscript && !liveStreamTranscript) {
             try {
               const sttResult = await apiClient.transcribeAudio({
                 audioBlob,
@@ -703,6 +769,7 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
           }
 
           const resolved = resolveFinalTranscriptWithSource({
+            liveStreamTranscript,
             sessionTranscript,
             deepgramTranscript,
             webSpeechTranscript: liveSpeechTranscript,
@@ -817,6 +884,7 @@ export function useMeetRecord(isDemoMode = false, userEmail?: string | null, use
     recordingSeconds,
     isPaused,
     audioPowerLevel,
+    liveTranscript,
     connectCalendar,
     disconnectCalendar,
     syncCalendar,

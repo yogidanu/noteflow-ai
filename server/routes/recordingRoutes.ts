@@ -1,7 +1,7 @@
 import { Router, Request, Response } from "express";
 import { ingressOrchestrator } from "../services/ingressOrchestrator.js";
 import { recordingSessionService } from "../services/recordingSessionService.js";
-import { sttService } from "../services/sttService.js";
+import { sttService, createDeepgramStreamGrant } from "../services/sttService.js";
 import { computeMeetingHash } from "../security/crypto.js";
 import { requireAuth } from "../middleware/authMiddleware.js";
 import { recordingRateLimiter } from "../middleware/rateLimiter.js";
@@ -290,6 +290,29 @@ const handleStopRecording = async (req: Request, res: Response) => {
 
 recordingRouter.post("/stop", requireAuth, handleStopRecording);
 recordingRouter.post("/session/:id/stop", requireAuth, handleStopRecording);
+
+/**
+ * POST /api/recording/stream-token
+ * Returns a short-lived Deepgram access token so the browser can open
+ * a LIVE streaming transcription socket without ever seeing the real
+ * API key. Any failure answers 502 (generic in production) and the
+ * client silently falls back to batch transcription + live captions.
+ */
+recordingRouter.post("/stream-token", requireAuth, recordingRateLimiter, async (req: Request, res: Response) => {
+  try {
+    const grant = await createDeepgramStreamGrant();
+    res.json({
+      success: true,
+      data: { accessToken: grant.accessToken, expiresIn: grant.expiresIn },
+    });
+  } catch (err: any) {
+    console.error("[StreamToken] Grant failed:", err?.message || err);
+    res.status(502).json({
+      success: false,
+      error: process.env.NODE_ENV === "production" ? "STREAM_UNAVAILABLE" : err.message || "STREAM_UNAVAILABLE",
+    });
+  }
+});
 
 /**
  * POST /api/recording/transcribe
